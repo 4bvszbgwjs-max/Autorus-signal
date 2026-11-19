@@ -29,6 +29,14 @@ final class OpenApiController
                     503 => ['description' => 'PostgreSQL is unavailable'],
                 ],
             ]],
+            '/metrics' => ['get' => [
+                'operationId' => 'getMetrics',
+                'security' => [],
+                'responses' => [200 => [
+                    'description' => 'Homer metrics in Prometheus text exposition format',
+                    'content' => ['text/plain' => ['schema' => ['type' => 'string']]],
+                ]],
+            ]],
         ];
         foreach (['channel', 'message', 'recipient', 'scenario', 'sending', 'eventlog'] as $resource) {
             $base = '/api/v1/'.$resource.'/';
@@ -71,7 +79,7 @@ final class OpenApiController
 
         return response()->json([
             'openapi' => '3.0.3',
-            'info' => ['title' => 'Homer API', 'version' => '1.0.0'],
+            'info' => ['title' => config('homer_admin.brand').' API', 'version' => '1.0.0'],
             'security' => [['bearerAuth' => []]],
             'paths' => $paths,
             'components' => [
