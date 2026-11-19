@@ -3,6 +3,7 @@
 use App\Notifications\DeliverSendings;
 use App\Notifications\MessageIntake;
 use App\Notifications\PrepareSendings;
+use App\Notifications\PurgeExpired;
 use App\Notifications\RabbitMq;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Schedule;
@@ -55,3 +56,20 @@ Artisan::command('homer:deliver {--limit=100}', function (DeliverSendings $deliv
 
 Schedule::command('homer:prepare')->everySecond()->runInBackground()->withoutOverlapping(5);
 Schedule::command('homer:deliver --limit=10')->everySecond()->runInBackground()->withoutOverlapping(5);
+
+Artisan::command('homer:purge-expired {--limit=1000}', function (PurgeExpired $purge): int {
+    $limit = filter_var($this->option('limit'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 1000]]);
+    if ($limit === false) {
+        $this->error('The batch limit must be between 1 and 1000.');
+
+        return 1;
+    }
+
+    $this->info('Purged messages: '.$purge->batch($limit));
+
+    return 0;
+})->purpose('Delete expired messages and their sendings');
+
+if (config('homer.purge_expired')) {
+    Schedule::command('homer:purge-expired')->everyMinute()->withoutOverlapping(5);
+}

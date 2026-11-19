@@ -35,6 +35,7 @@ trap cleanup EXIT
 
 "${compose[@]}" up -d --wait --wait-timeout 120
 "${compose[@]}" exec -T web php tests/delivery-regression.php
+"${compose[@]}" exec -T web php tests/admin-transfer-regression.php
 "${compose[@]}" exec -T web php < tests/smoke-compose.php
 
 # This stack has its own database. Stopping it must affect readiness, not liveness.

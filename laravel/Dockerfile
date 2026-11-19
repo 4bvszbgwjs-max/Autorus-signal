@@ -5,6 +5,7 @@ RUN install-php-extensions pdo_pgsql pcntl sockets zip
 COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 
 WORKDIR /app
+ENV SESSION_DRIVER=file CACHE_STORE=file LOG_CHANNEL=stderr
 COPY . .
 RUN --mount=type=secret,id=composer_ca \
     if [ -r /run/secrets/composer_ca ]; then export COMPOSER_CAFILE=/run/secrets/composer_ca; fi && \

@@ -1,7 +1,7 @@
 x-homer: &homer
   image: ${HOMER_IMAGE:-homer-octane:local}
   environment:
-    APP_NAME: Homer
+    APP_NAME: Авторусь Сигнал
     APP_ENV: ${APP_ENV:-production}
     APP_DEBUG: "false"
     APP_KEY: ${APP_KEY:?Set APP_KEY in the Compose environment file}
@@ -20,6 +20,7 @@ x-homer: &homer
     HOMER_ADMIN_PASSWORD_HASH: ${HOMER_ADMIN_PASSWORD_HASH:-}
     RMQ_BROKER_URL: amqp://homer:${RABBITMQ_PASSWORD:?Set a URL-safe RABBITMQ_PASSWORD}@rabbitmq:5672/%2F
     RMQ_CREATE_MESSAGE_EXCHANGE: ${RMQ_CREATE_MESSAGE_EXCHANGE:-homer.message}
+    HOMER_PURGE_EXPIRED: ${HOMER_PURGE_EXPIRED:-false}
 
 services:
   postgres:
@@ -65,6 +66,10 @@ services:
   web:
     <<: *homer
     restart: unless-stopped
+    # After PostgreSQL stops, Docker DNS may forward lookups for its absent service name.
+    dns_opt:
+      - "timeout:1"
+      - "attempts:1"
     ports:
       - "127.0.0.1:${HOMER_HTTP_PORT:-8000}:8000"
     depends_on:
