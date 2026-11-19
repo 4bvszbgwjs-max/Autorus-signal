@@ -1,0 +1,37 @@
+name: Windows offline download
+
+on:
+  push:
+    branches: [download/homer-windows-offline]
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Build with locked Composer dependencies
+        run: docker build -t homer-windows-offline:local laravel
+      - name: Assemble and verify offline files
+        run: |
+          set -euo pipefail
+          mkdir -p offline/Homer-offline
+          git archive HEAD | tar -x -C offline/Homer-offline
+          container=$(docker create homer-windows-offline:local)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/app/vendor" offline/Homer-offline/laravel/vendor
+          test -f offline/Homer-offline/laravel/vendor/autoload.php
+          docker run --rm --network none -v "$PWD/offline/Homer-offline/laravel:/app:ro" -w /app --entrypoint php homer-windows-offline:local artisan --version
+      - name: Upload Windows offline download
+        uses: actions/upload-artifact@v4
+        with:
+          name: Homer-Windows-offline
+          path: offline/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
