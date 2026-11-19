@@ -14,12 +14,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
       - name: Build the application image
         working-directory: laravel
         run: docker build -t homer-octane:ci .
+      - name: Audit locked Composer dependencies
+        run: docker run --rm --entrypoint composer homer-octane:ci audit --locked --no-interaction
       - name: Verify Compose startup and delivery
         working-directory: laravel
         run: bash tests/smoke-compose.sh homer-octane:ci
