@@ -9,6 +9,7 @@ x-homer: &homer
     DB_CONNECTION: pgsql
     DB_HOST: postgres
     DB_PORT: 5432
+    DB_CONNECT_TIMEOUT: 2
     DB_DATABASE: homer
     DB_USERNAME: homer
     DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
@@ -70,9 +71,9 @@ services:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/ping"]
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/ready"]
       interval: 5s
-      timeout: 3s
+      timeout: 8s
       retries: 15
 
   consumer:

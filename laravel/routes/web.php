@@ -1,9 +1,12 @@
 <?php
 
 use App\Http\AdminController;
+use App\Http\ReadinessController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/ping', fn () => response()->json(['meta' => (object) [], 'data' => []]));
+
+Route::get('/ready', ReadinessController::class);
 
 Route::prefix('admin')->name('admin.')->group(function () {
     Route::get('/', [AdminController::class, 'login'])->name('login');
