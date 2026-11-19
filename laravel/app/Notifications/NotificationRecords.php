@@ -29,8 +29,11 @@ final class NotificationRecords
         $query = Resource::Message->query()->where('id', $id);
 
         try {
-            return DB::transaction(function () use ($query, $data): array {
+            return DB::transaction(function () use ($query, $data, $id): array {
                 abort_if((clone $query)->lockForUpdate()->first() === null, 404);
+                if ($data['isDeleted'] ?? false) {
+                    $this->lockIdleSendings(Resource::Sending->query()->where('message', $id));
+                }
                 (clone $query)->update([...$data, 'updatedAt' => now()]);
 
                 return Resource::Message->serialize($query->first());

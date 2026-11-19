@@ -38,6 +38,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:4-alpine
+    hostname: rabbitmq
     restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: homer
