@@ -36,3 +36,12 @@ trap cleanup EXIT
 "${compose[@]}" up -d --wait --wait-timeout 120
 "${compose[@]}" exec -T web php tests/delivery-regression.php
 "${compose[@]}" exec -T web php < tests/smoke-compose.php
+
+# This stack has its own database. Stopping it must affect readiness, not liveness.
+"${compose[@]}" stop postgres
+ready_status=$("${compose[@]}" exec -T web curl -sS --max-time 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/ready)
+test "$ready_status" = 503
+"${compose[@]}" exec -T web curl -fsS --max-time 10 -o /dev/null http://127.0.0.1:8000/ping
+"${compose[@]}" up -d --wait --wait-timeout 60 postgres
+"${compose[@]}" exec -T web curl -fsS --max-time 10 -o /dev/null http://127.0.0.1:8000/ready
+printf 'Readiness returns 503 during a database outage and recovers after restart.\n'

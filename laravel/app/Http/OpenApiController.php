@@ -19,7 +19,17 @@ final class OpenApiController
 
         $ping = $this->operation('getPing', 200);
         $ping['security'] = [];
-        $paths = ['/ping/' => ['get' => $ping]];
+        $paths = [
+            '/ping/' => ['get' => $ping],
+            '/ready/' => ['get' => [
+                'operationId' => 'getReadiness',
+                'security' => [],
+                'responses' => [
+                    200 => ['description' => 'PostgreSQL is reachable'],
+                    503 => ['description' => 'PostgreSQL is unavailable'],
+                ],
+            ]],
+        ];
         foreach (['channel', 'message', 'recipient', 'scenario', 'sending', 'eventlog'] as $resource) {
             $base = '/api/v1/'.$resource.'/';
             $id = $resource === 'channel' ? 'code' : 'id';
