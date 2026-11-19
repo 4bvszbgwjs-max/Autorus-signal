@@ -88,6 +88,7 @@ try {
 
     $request('PATCH', 'sending/status', ['uuid' => $providerId, 'status' => 'delivered'], 409);
     $request('DELETE', 'channel/'.$channel, [], 409);
+    $request('PATCH', 'message/'.$message['id'], ['isDeleted' => true], 409);
     if ((int) (clone $row)->value('status') !== 2 || (clone $row)->value('claimedAt') === null) {
         throw new RuntimeException('A provider callback changed a sending held by the worker.');
     }
@@ -108,6 +109,15 @@ try {
     $request('PATCH', 'sending/status', ['uuid' => $providerId, 'channel' => $otherChannel, 'status' => 'delivered'], 200);
     if ((int) DB::table('sendings')->where('id', $other['id'])->value('status') !== 7) {
         throw new RuntimeException('A channel-scoped callback did not update its sending.');
+    }
+
+    $request('POST', 'sending', [
+        'channel' => $channel, 'message' => $message['id'],
+        'destination' => 'synthetic-recipient', 'content' => 'Pending cancellation',
+    ], 201);
+    $request('PATCH', 'message/'.$message['id'], ['isDeleted' => true], 200);
+    if ($app->make(App\Notifications\DeliverSendings::class)->batch(1) !== 0) {
+        throw new RuntimeException('The worker claimed a child of a soft-deleted message.');
     }
 
     $request('DELETE', 'channel/'.$channel, [], 204);

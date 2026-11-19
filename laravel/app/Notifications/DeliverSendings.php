@@ -34,6 +34,11 @@ final class DeliverSendings
                 continue;
             }
             $message = Resource::Message->query()->where('id', $sending->message)->first();
+            if ($message?->isDeleted) {
+                $this->finish($sending, ['status' => 4, 'deliveryError' => 'message_deleted']);
+                continue;
+            }
+
             try {
                 $uuid = $this->providers->send($channel->sender, $config, $sending, $message);
                 $result = ['uuid' => $uuid, 'status' => 3, 'deliveryError' => null];
@@ -64,12 +69,16 @@ final class DeliverSendings
             UPDATE sendings
             SET status = 2, attempts = attempts + 1, "claimedAt" = ?, "retryAt" = NULL, "updatedAt" = ?
             WHERE id = (
-                SELECT id FROM sendings
-                WHERE status IN (0, 1) AND NOT "isDeleted" AND destination <> ''
-                    AND expire > ? AND "mustBeSend" <= ?
-                    AND ("retryAt" IS NULL OR "retryAt" <= ?)
-                ORDER BY "mustBeSend", id
-                LIMIT 1 FOR UPDATE SKIP LOCKED
+                SELECT pending.id FROM sendings AS pending
+                WHERE pending.status IN (0, 1) AND NOT pending."isDeleted" AND pending.destination <> ''
+                    AND pending.expire > ? AND pending."mustBeSend" <= ?
+                    AND (pending."retryAt" IS NULL OR pending."retryAt" <= ?)
+                    AND NOT EXISTS (
+                        SELECT 1 FROM messages
+                        WHERE messages.id = pending.message AND messages."isDeleted"
+                    )
+                ORDER BY pending."mustBeSend", pending.id
+                LIMIT 1 FOR UPDATE OF pending SKIP LOCKED
             )
             RETURNING *
             SQL, [$now, $now, $now, $now, $now], false);
