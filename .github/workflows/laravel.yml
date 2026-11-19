@@ -1,0 +1,25 @@
+name: Laravel
+
+on:
+  pull_request:
+  push:
+    branches: [main, feature/laravel-octane]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build the application image
+        working-directory: laravel
+        run: docker build -t homer-octane:ci .
+      - name: Verify Compose startup and delivery
+        working-directory: laravel
+        run: bash tests/smoke-compose.sh homer-octane:ci

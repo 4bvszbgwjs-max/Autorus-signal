@@ -1,0 +1,10 @@
+.env
+vendor
+bootstrap/cache/*.php
+storage/logs/*
+!storage/logs/.gitkeep
+storage/framework/*/*
+!storage/framework/*/.gitkeep
+public/frankenphp-worker.php
+
+.env.compose

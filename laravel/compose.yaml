@@ -1,0 +1,111 @@
+x-homer: &homer
+  image: ${HOMER_IMAGE:-homer-octane:local}
+  environment:
+    APP_NAME: Homer
+    APP_ENV: ${APP_ENV:-production}
+    APP_DEBUG: "false"
+    APP_KEY: ${APP_KEY:?Set APP_KEY in the Compose environment file}
+    APP_URL: ${APP_URL:-http://localhost:8000}
+    DB_CONNECTION: pgsql
+    DB_HOST: postgres
+    DB_PORT: 5432
+    DB_DATABASE: homer
+    DB_USERNAME: homer
+    DB_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    SESSION_DRIVER: file
+    CACHE_STORE: file
+    LOG_CHANNEL: stderr
+    HOMER_API_TOKEN: ${HOMER_API_TOKEN:?Set HOMER_API_TOKEN}
+    HOMER_ADMIN_PASSWORD_HASH: ${HOMER_ADMIN_PASSWORD_HASH:-}
+    RMQ_BROKER_URL: amqp://homer:${RABBITMQ_PASSWORD:?Set a URL-safe RABBITMQ_PASSWORD}@rabbitmq:5672/%2F
+    RMQ_CREATE_MESSAGE_EXCHANGE: ${RMQ_CREATE_MESSAGE_EXCHANGE:-homer.message}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: homer
+      POSTGRES_USER: homer
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "homer", "-d", "homer"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: homer
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?Set a URL-safe RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_listener", "5672"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrate:
+    <<: *homer
+    entrypoint: ["php", "artisan"]
+    command: ["migrate", "--force", "--no-interaction"]
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    <<: *homer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HOMER_HTTP_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8000/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+
+  consumer:
+    <<: *homer
+    entrypoint: ["php", "artisan"]
+    command: ["homer:consume"]
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(str_contains(file_get_contents('/proc/1/cmdline'), 'homer:consume') ? 0 : 1);"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  scheduler:
+    <<: *homer
+    entrypoint: ["php", "artisan"]
+    command: ["schedule:work"]
+    healthcheck:
+      test: ["CMD", "php", "-r", "exit(str_contains(file_get_contents('/proc/1/cmdline'), 'schedule:work') ? 0 : 1);"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
