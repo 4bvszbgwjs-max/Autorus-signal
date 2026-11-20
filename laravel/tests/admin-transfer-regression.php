@@ -12,6 +12,10 @@ use OpenSpout\Reader\XLSX\Reader;
 require __DIR__.'/../vendor/autoload.php';
 $app = require __DIR__.'/../bootstrap/app.php';
 $app->make(Kernel::class)->bootstrap();
+set_exception_handler(static function (Throwable $error): void {
+    fwrite(STDERR, $error->getMessage().PHP_EOL);
+    exit(1);
+});
 
 if (! $app->environment('testing')) {
     fwrite(STDERR, "Use APP_ENV=testing with a migrated test PostgreSQL database.\n");

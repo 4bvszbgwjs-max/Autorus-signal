@@ -73,3 +73,21 @@ Artisan::command('homer:purge-expired {--limit=1000}', function (PurgeExpired $p
 if (config('homer.purge_expired')) {
     Schedule::command('homer:purge-expired')->everyMinute()->withoutOverlapping(5);
 }
+
+Artisan::command('signal:admin-create {login}', function (\App\Admin\AdminAccounts $accounts): int {
+    $password = $this->secret('Пароль администратора');
+    $confirmation = $this->secret('Повторите пароль');
+    try {
+        $accounts->save([
+            'login' => $this->argument('login'), 'role' => 'admin', 'active' => true,
+            'password' => $password, 'password_confirmation' => $confirmation,
+        ], 'console');
+    } catch (\Illuminate\Validation\ValidationException $exception) {
+        $this->error($exception->getMessage());
+
+        return 1;
+    }
+    $this->info('Учётная запись администратора создана.');
+
+    return 0;
+})->purpose('Create a personal administrator account');

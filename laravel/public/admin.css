@@ -74,3 +74,18 @@ dt{font-weight:600} dd{margin:4px 0 10px;white-space:pre-wrap}
   .toolbar{align-items:flex-start}
   .file-menu form{left:0;right:auto;width:min(270px,calc(100vw - 145px))}
 }
+.account-bar{display:flex;align-items:center;gap:.75rem}
+.login-card input+label{margin-top:10px}
+.queue-summary{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(220px,100%),1fr));gap:12px;margin-bottom:16px}
+.metric{padding:14px 16px}
+.metric span,.metric strong{display:block}
+.metric strong{font-size:1.45rem;margin-top:6px}
+.section-heading{margin-top:24px}
+.scenario-editor fieldset,.preview-form{min-width:0;margin:0 0 16px;padding:12px;border:1px solid var(--border);border-radius:4px}
+.scenario-editor legend,.preview-form legend{font-weight:700;padding:0 6px}
+.scenario-rule{padding:12px;margin-bottom:10px;background:#f8f8f9;border:1px solid var(--border);border-radius:4px}
+.scenario-rule details,.preview-form details{margin:8px 0}
+.scenario-rule .fields{margin-bottom:0}
+.scenario-rule .tick{font-weight:400;display:flex;align-items:center;gap:6px}
+.scenario-rule .tick input{width:auto;min-height:auto}
+.preview-result{margin-top:12px;padding:12px;background:#f2f2f4;border-radius:4px}

@@ -2,11 +2,14 @@
 
 namespace App\Http;
 
+use App\Admin\AdminAccounts;
 use App\Notifications\AdminSpreadsheet;
 use App\Notifications\AdminTransfer;
 use App\Notifications\Directory;
 use App\Notifications\Resource;
+use App\Notifications\ScenarioRouting;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use JsonException;
 
@@ -15,23 +18,19 @@ final class AdminController
     private const SEARCH = ['recipient' => ['name', 'phone', 'email'], 'channel' => ['code', 'name'], 'scenario' => ['title', 'description'],
         'message' => ['subject', 'eventId', 'recipientId'], 'sending' => ['subject', 'destination', 'uuid'], 'eventlog' => ['event', 'initiator']];
 
-    public function login(Request $request)
+    public function login(Request $request, AdminAccounts $accounts)
     {
-        return $this->signedIn($request)
+        return $accounts->identity($request) !== null
             ? redirect()->route('admin.directory', ['resource' => 'channel'])
-            : view('admin', ['resource' => null]);
+            : view('admin', ['resource' => null, 'requiresLogin' => $accounts->requiresLogin()]);
     }
 
-    public function authenticate(Request $request)
+    public function authenticate(Request $request, AdminAccounts $accounts)
     {
-        $credentials = $request->validate(['password' => 'required|string|max:1024']);
-        $hash = config('homer.admin_password_hash');
-        if (! is_string($hash) || ! password_verify($credentials['password'], $hash)) {
-            return back()->withErrors(['password' => 'Неверный пароль.']);
+        $credentials = $request->validate(['login' => 'nullable|string|max:64', 'password' => 'required|string|max:1024']);
+        if (! $accounts->authenticate($request, $credentials['login'] ?? null, $credentials['password'])) {
+            return back()->withErrors(['password' => 'Неверные данные для входа.']);
         }
-
-        $request->session()->regenerate();
-        $request->session()->put('homer_admin', hash('sha256', $hash));
 
         return redirect()->route('admin.directory', ['resource' => 'channel']);
     }
@@ -46,10 +45,6 @@ final class AdminController
 
     public function index(Request $request, string $resource)
     {
-        if (! $this->signedIn($request)) {
-            return redirect()->route('admin.login');
-        }
-
         $type = Resource::from($resource);
         $query = $type->query()->orderByDesc($type->key());
         $search = $request->query('search');
@@ -72,27 +67,74 @@ final class AdminController
 
     public function form(Request $request, Directory $directory, string $resource, ?string $key = null)
     {
-        abort_unless($this->signedIn($request), 403);
         $type = Resource::from($resource);
 
         return view('admin', [
             'resource' => $type,
             'key' => $key,
             'record' => $key === null ? [] : $this->present($type, $directory->find($type, $key)),
+            'scenarioChannels' => $type === Resource::Scenario ? $this->scenarioChannels() : [],
         ]);
+    }
+
+    public function preview(Request $request, Directory $directory, ScenarioRouting $routing, ?string $key = null)
+    {
+        $type = Resource::Scenario;
+        $record = $key === null ? [] : $this->present($type, $directory->find($type, $key));
+        $response = redirect()->route($key === null ? 'admin.create' : 'admin.edit', ['resource' => 'scenario', 'key' => $key])
+            ->withInput($this->scenarioInput($request));
+        try {
+            $data = $request->validate(['preview_phone' => 'required|string|max:200', 'preview_metadata' => 'nullable|string|max:8000']);
+            $draft = $directory->scenarioDraft($this->formData($request, $type));
+            $metadata = isset($data['preview_metadata']) ? JsonPayload::object($data['preview_metadata']) : [];
+            $recipient = Resource::Recipient->query()->where('phone', $data['preview_phone'])->where('isDeleted', false)->first();
+            if ($recipient === null) {
+                throw ValidationException::withMessages(['preview_phone' => 'Активный получатель с таким телефоном не найден.']);
+            }
+        } catch (JsonException | ValidationException $error) {
+            return $response->withErrors($error instanceof ValidationException ? $error->errors() : ['rules' => 'Проверьте данные сценария.']);
+        }
+
+        $record = array_replace($record, $draft);
+        $channels = $this->scenarioChannels();
+        $available = $channels->where('isDeleted', false)->pluck('sender', 'code');
+        $selection = [];
+        if (! ($record['isDeleted'] ?? false)) {
+            $first = json_decode(json_encode($record['channelsFirstOf'] ?? [], JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+            $every = json_decode(json_encode($record['channelsEveryOf'] ?? [], JSON_THROW_ON_ERROR), true, flags: JSON_THROW_ON_ERROR);
+            $rules = $routing->selectChannels($first, $every, $recipient, $available);
+            foreach ($rules as $code => $rule) {
+                $selection[] = [
+                    'code' => $code,
+                    'hasDestination' => $routing->destination($metadata, $recipient, $rule, $available->get($code)) !== null,
+                ];
+            }
+        }
+
+        return $response->with('scenario_preview', $selection);
+    }
+
+    private function scenarioChannels()
+    {
+        return Resource::Channel->query()->orderBy('name')->get(['code', 'name', 'sender', 'isDeleted']);
     }
 
     public function save(Request $request, AdminTransfer $transfer, string $resource, ?string $key = null)
     {
-        abort_unless($this->signedIn($request), 403);
         $type = Resource::from($resource);
         $this->validateKey($type, $key);
         try {
-            $transfer->save($type, $this->formData($request, $type), $key);
+            $input = $this->formData($request, $type);
+            DB::transaction(function () use ($request, $transfer, $type, $input, $key): void {
+                $record = $transfer->save($type, $input, $key);
+                $actor = $request->attributes->get('admin');
+                AdminAccounts::audit($actor->login, $key === null ? 'create' : 'update',
+                    $type->value, (string) $record[$type->key()], actorId: $actor->id ?? null);
+            }, 3);
         } catch (JsonException) {
-            return back()->withErrors(['payload' => 'Проверьте формат JSON в настройках записи.']);
+            return $this->invalidForm($request, $type, ['payload' => 'Проверьте формат JSON в настройках записи.']);
         } catch (ValidationException $exception) {
-            return back()->withErrors($exception->errors());
+            return $this->invalidForm($request, $type, $exception->errors());
         }
 
         return redirect()->route('admin.directory', ['resource' => $resource])->with('status', 'Запись сохранена.');
@@ -100,7 +142,6 @@ final class AdminController
 
     public function export(Request $request, AdminSpreadsheet $sheets, string $resource)
     {
-        abort_unless($this->signedIn($request), 403);
         $type = Resource::from($resource);
         $format = $request->query('format', 'json');
         abort_unless(in_array($format, ['json', 'csv', 'xlsx'], true), 400);
@@ -133,7 +174,6 @@ final class AdminController
 
     public function import(Request $request, AdminTransfer $transfer, AdminSpreadsheet $sheets, string $resource)
     {
-        abort_unless($this->signedIn($request), 403);
         $request->validate(['records' => 'required|file|max:2048']);
         try {
             $file = $request->file('records');
@@ -146,7 +186,13 @@ final class AdminController
             if (count($rows) > 1000) {
                 throw ValidationException::withMessages(['records' => 'В одном файле может быть до 1000 записей.']);
             }
-            $count = $transfer->import($type, $rows);
+            $count = DB::transaction(function () use ($request, $transfer, $type, $rows): int {
+                $imported = $transfer->import($type, $rows);
+                $actor = $request->attributes->get('admin');
+                AdminAccounts::audit($actor->login, 'import', $type->value, count: $imported, actorId: $actor->id ?? null);
+
+                return $imported;
+            }, 3);
         } catch (ValidationException $exception) {
             return back()->withErrors($exception->errors());
         }
@@ -156,10 +202,13 @@ final class AdminController
 
     public function delete(Request $request, AdminTransfer $transfer, string $resource, string $key)
     {
-        abort_unless($this->signedIn($request), 403);
         $type = Resource::from($resource);
         $this->validateKey($type, $key);
-        $transfer->remove($type, $key);
+        DB::transaction(function () use ($request, $transfer, $type, $key): void {
+            $transfer->remove($type, $key);
+            $actor = $request->attributes->get('admin');
+            AdminAccounts::audit($actor->login, 'delete', $type->value, $key, actorId: $actor->id ?? null);
+        }, 3);
 
         return redirect()->route('admin.directory', ['resource' => $resource])->with('status', 'Запись удалена.');
     }
@@ -167,6 +216,26 @@ final class AdminController
     private function validateKey(Resource $resource, ?string $key): void
     {
         abort_if($key !== null && $resource->key() === 'id' && filter_var($key, FILTER_VALIDATE_INT) === false, 404);
+    }
+
+    private function invalidForm(Request $request, Resource $resource, array $errors)
+    {
+        $response = back()->withErrors($errors);
+
+        return $resource === Resource::Scenario ? $response->withInput($this->scenarioInput($request)) : $response;
+    }
+
+    private function scenarioInput(Request $request): array
+    {
+        $fields = $request->input('fields');
+        $input = ['fields' => is_array($fields) ? array_filter($fields, 'is_string') : []];
+        foreach (['preview_phone', 'preview_metadata'] as $field) {
+            if (is_string($request->input($field))) {
+                $input[$field] = $request->input($field);
+            }
+        }
+
+        return $input;
     }
 
     private function present(Resource $resource, object $row): array
@@ -207,14 +276,5 @@ final class AdminController
         JsonPayload::objects(json_encode((object) $result, JSON_THROW_ON_ERROR));
 
         return $result;
-    }
-
-    private function signedIn(Request $request): bool
-    {
-        $hash = config('homer.admin_password_hash');
-        $session = $request->session()->get('homer_admin');
-
-        return is_string($hash) && $hash !== '' && is_string($session)
-            && hash_equals(hash('sha256', $hash), $session);
     }
 }
