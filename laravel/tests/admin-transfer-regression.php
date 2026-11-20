@@ -29,6 +29,20 @@ try {
     if (count($rows) !== 1 || $rows[0]->phone !== '0123' || $rows[0]->name !== 'Тест') {
         throw new RuntimeException('CSV with blank lines before the header was parsed incorrectly.');
     }
+    file_put_contents($csv, "phone,name\r\n0123,\"Строка 1\nСтрока 2 \"\"текст\"\"\"\r\n");
+    $rows = $sheets->read(Resource::Recipient, $csv, 'csv');
+    if (count($rows) !== 1 || $rows[0]->name !== "Строка 1\nСтрока 2 \"текст\"") {
+        throw new RuntimeException('CSV did not preserve legitimate quoted multiline data.');
+    }
+    file_put_contents($csv, "phone,name\n0123,Первый\n0124,\"Обрезанная запись");
+    try {
+        $sheets->read(Resource::Recipient, $csv, 'csv');
+        throw new RuntimeException('A truncated CSV was accepted.');
+    } catch (ValidationException $error) {
+        if (! str_contains($error->getMessage(), 'Запись CSV 3')) {
+            throw $error;
+        }
+    }
     $recipientId = Resource::Recipient->query()->insertGetId([
         'phone' => Str::random(32), 'createdAt' => now(), 'updatedAt' => now(),
     ]);
