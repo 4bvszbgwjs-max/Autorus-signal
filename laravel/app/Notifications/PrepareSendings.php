@@ -84,10 +84,13 @@ final class PrepareSendings
             $sendings = [];
             foreach ($active as $message) {
                 $recipient = $recipients->get($message->recipientId);
-                $scenario = $byUuid->get($message->scenario_id) ?? $defaults->get($message->type);
+                $explicitScenario = $message->scenario_id;
+                $scenario = $explicitScenario === null ? $defaults->get($message->type) : $byUuid->get($explicitScenario);
                 [$first, $every] = $scenarioRules[$scenario?->uuid] ?? [[], []];
                 $rules = $this->selectChannels($first, $every, $recipient, $available);
-                $channels = $rules === [] ? $requestedChannels[$message->id] : array_map('strval', array_keys($rules));
+                $channels = $scenario === null && $explicitScenario === null
+                    ? $requestedChannels[$message->id]
+                    : array_map('strval', array_keys($rules));
                 $metadata = json_decode($message->metadata, true, flags: JSON_THROW_ON_ERROR);
                 $sendable = false;
 
@@ -124,7 +127,7 @@ final class PrepareSendings
                 Resource::Message->query()->where('id', $message->id)->update([
                     'status' => $sendable ? self::READY : self::UNSENT,
                     'channels' => json_encode($channels, JSON_THROW_ON_ERROR),
-                    'scenario_id' => $scenario?->uuid,
+                    'scenario_id' => $scenario?->uuid ?? $explicitScenario,
                     'type' => $scenario ? $scenario->messageType : $message->type,
                     'updatedAt' => $now,
                 ]);

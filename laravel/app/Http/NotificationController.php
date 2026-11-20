@@ -83,12 +83,11 @@ final class NotificationController
     {
         $ids = $this->validatedKeys($request, 'uuid', 'uuid');
         DB::transaction(function () use ($ids, $records): void {
-            $messages = Resource::Message->query()->whereIn('uuid', $ids);
-            $messageIds = (clone $messages)->orderBy('id')->lockForUpdate()->pluck('id');
+            $messageIds = Resource::Message->query()->whereIn('uuid', $ids)->orderBy('id')->lockForUpdate()->pluck('id');
             $sendings = Resource::Sending->query()->whereIn('message', $messageIds);
-            $records->lockIdleSendings($sendings);
-            $sendings->delete();
-            $messages->delete();
+            $lockedIds = $records->lockIdleSendings($sendings)->pluck('id');
+            Resource::Sending->query()->whereIn('id', $lockedIds)->delete();
+            Resource::Message->query()->whereIn('id', $messageIds)->delete();
         }, 3);
 
         return $this->respond(true);
@@ -99,8 +98,8 @@ final class NotificationController
         $ids = $this->validatedKeys($request, 'id', 'integer');
         DB::transaction(function () use ($ids, $records): void {
             $sendings = Resource::Sending->query()->whereIn('id', $ids);
-            $records->lockIdleSendings($sendings);
-            $sendings->delete();
+            $lockedIds = $records->lockIdleSendings($sendings)->pluck('id');
+            Resource::Sending->query()->whereIn('id', $lockedIds)->delete();
         }, 3);
 
         return $this->respond(true);
@@ -123,7 +122,7 @@ final class NotificationController
             'items' => 'array|max:1000',
             'items.*.uuid' => 'required|string|max:200',
             'items.*.channel' => 'nullable|string|max:50',
-            'items.*.status' => 'required|integer|between:0,8',
+            'items.*.status' => 'required|integer|between:3,8',
         ])->validate();
 
         $result = DB::transaction(function () use ($validated, $records): array {
