@@ -55,6 +55,11 @@ final class Directory
         }, 3);
     }
 
+    public function scenarioDraft(array $input): array
+    {
+        return $this->validate(Resource::Scenario, $input, false);
+    }
+
     public function find(Resource $resource, string $key): object
     {
         abort_if($resource->key() === 'id' && filter_var($key, FILTER_VALIDATE_INT) === false, 404);

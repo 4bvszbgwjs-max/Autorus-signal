@@ -1,13 +1,19 @@
+@php
+    $admin = request()->attributes->get('admin');
+    $workspace = isset($resource) || isset($panel);
+    $canEdit = $admin !== null && $admin->role !== 'viewer';
+@endphp
 <!doctype html>
 <html lang="ru">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ $resource ? config('homer_admin.resources.'.$resource->value.'.title').' · ' : '' }}{{ config('homer_admin.brand') }}</title>
+    <title>{{ $resource ? config('homer_admin.resources.'.$resource->value.'.title').' · ' : (isset($panelTitle) ? $panelTitle.' · ' : '') }}{{ config('homer_admin.brand') }}</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="{{ asset('admin.css') }}">
+    @if ($resource === App\Notifications\Resource::Scenario && $canEdit)<script src="{{ asset('admin-scenario.js') }}" defer></script>@endif
 </head>
-<body class="{{ $resource ? 'workspace' : 'login' }}">
+<body class="{{ $workspace ? 'workspace' : 'login' }}">
 @php
     $sections = config('homer_admin.resources');
     $statuses = config('homer_admin.statuses');
@@ -17,14 +23,20 @@
         'status' => $statuses[$value] ?? '—',
         'type', 'messageType' => $types[$value] ?? '—',
         'sender' => $providers[$value] ?? $value,
-        default => $value === null || $value === '' ? '—' : (is_bool($value) ? ($value ? 'Да' : 'Нет') : $value),
+        default => match (true) {
+            $value === null || $value === '' => '—',
+            is_bool($value) => $value ? 'Да' : 'Нет',
+            is_array($value) || is_object($value) => json_encode($value, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT),
+            default => $value,
+        },
     };
 @endphp
 
-@if ($resource)
+@if ($workspace)
     <header class="topbar">
         <a class="brand" href="{{ route('admin.login') }}">{{ config('homer_admin.brand') }}</a>
-        <form method="post" action="{{ route('admin.logout') }}">
+        <form class="account-bar" method="post" action="{{ route('admin.logout') }}">
+            @if ($admin->login !== 'legacy')<span>{{ $admin->login }}</span>@endif
             @csrf
             <button class="button outline" type="submit">Выйти</button>
         </form>
@@ -32,13 +44,18 @@
     <aside class="sidebar">
         <nav aria-label="Разделы">
             @foreach ($sections as $id => $section)
-                <a href="{{ route('admin.directory', ['resource'=>$id]) }}" @if($id === $resource->value) aria-current="page" @endif>{{ $section['title'] }}</a>
+                <a href="{{ route('admin.directory', ['resource'=>$id]) }}" @if($id === $resource?->value) aria-current="page" @endif>{{ $section['title'] }}</a>
             @endforeach
+            <a href="{{ route('admin.queue') }}" @if(($panel ?? '') === 'queue') aria-current="page" @endif>Очередь доставки</a>
+            @if ($admin->role === 'admin')
+                <a href="{{ route('admin.accounts') }}" @if(in_array($panel ?? '', ['accounts','account-form'], true)) aria-current="page" @endif>Учётные записи</a>
+                <a href="{{ route('admin.audit') }}" @if(($panel ?? '') === 'audit') aria-current="page" @endif>Журнал действий</a>
+            @endif
         </nav>
     </aside>
 @endif
 
-<main class="{{ $resource ? 'content' : 'login-main' }}">
+<main class="{{ $workspace ? 'content' : 'login-main' }}">
     @if ($errors->any())
         <ul class="alert error" role="alert">
             @foreach ($errors->all() as $error)
@@ -50,23 +67,30 @@
         <p class="alert success" role="status">{{ session('status') }}</p>
     @endif
 
-    @if (!$resource)
+    @if (!$workspace)
         <section class="card login-card">
             <h1>{{ config('homer_admin.brand') }}</h1>
             <p>Управление уведомлениями</p>
             <form method="post" action="{{ route('admin.authenticate') }}">
                 @csrf
+                @if ($requiresLogin ?? false)
+                    <label for="login">Логин</label>
+                    <input type="text" name="login" id="login" autocomplete="username" required autofocus>
+                @endif
                 <label for="password">Пароль</label>
-                <input type="password" name="password" id="password" autocomplete="current-password" required autofocus>
+                <input type="password" name="password" id="password" autocomplete="current-password" required @if(!($requiresLogin ?? false)) autofocus @endif>
                 <button class="button primary" type="submit">Войти</button>
             </form>
         </section>
+    @elseif (isset($panel))
+        @include('admin.panels')
     @else
         @php
             $section = $sections[$resource->value];
             $fields = $section['fields'] + ['isDeleted' => ['Пометка удаления', 'bool']];
             $params = ['resource' => $resource->value];
-            $readonly = $resource === App\Notifications\Resource::EventLog;
+            $readonly = !$canEdit || $resource === App\Notifications\Resource::EventLog;
+            $scenarioEditor = $resource === App\Notifications\Resource::Scenario;
         @endphp
         <div class="heading">
             <h1>{{ $section['title'] }}</h1>
@@ -165,8 +189,9 @@
                         @csrf
                         <div class="fields">
                             @foreach ($fields as $field => [$label, $type])
+                                @continue($scenarioEditor && in_array($field, ['channelsFirstOf', 'channelsEveryOf'], true))
                                 @php
-                                    $value = $record[$field] ?? null;
+                                    $value = $scenarioEditor && $type !== 'readonly' ? old("fields.$field", $record[$field] ?? null) : ($record[$field] ?? null);
                                     $choices = match ($type) {
                                         'bool' => [0=>'Нет', 1=>'Да'],
                                         'sender' => $providers,
@@ -195,6 +220,9 @@
                                 </div>
                             @endforeach
                         </div>
+                        @if ($scenarioEditor)
+                            @include('admin.scenario-editor')
+                        @endif
                         <button class="button primary" type="submit">Сохранить</button>
                     </form>
                     @if ($key !== null)
