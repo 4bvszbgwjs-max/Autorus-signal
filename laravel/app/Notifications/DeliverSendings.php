@@ -87,25 +87,33 @@ final class DeliverSendings
     private function finishStale(int $limit): void
     {
         $now = now();
-        $stale = Resource::Sending->query()->where(function ($query) use ($now): void {
+        $cutoff = $now->copy()->subMinutes(5);
+        $stale = Resource::Sending->query()->where(function ($query) use ($now, $cutoff): void {
             $query->where(fn ($ready) => $ready->whereIn('status', [0, 1])->where('expire', '<=', $now))
-                ->orWhere(fn ($queued) => $queued->where('status', 2)->where('claimedAt', '<=', $now->copy()->subMinutes(5)));
+                ->orWhere(fn ($queued) => $queued->where('status', 2)->where(fn ($claim) => $claim
+                    ->where('claimedAt', '<=', $cutoff)
+                    ->orWhere(fn ($unclaimed) => $unclaimed->whereNull('claimedAt')->where('updatedAt', '<=', $cutoff))));
         })->orderBy('id')->limit($limit)->get();
         foreach ($stale as $sending) {
             $this->finish($sending, $sending->status === 2
                 ? ['status' => 5, 'deliveryError' => 'delivery_outcome_unknown']
-                : ['status' => 6]);
+                : ['status' => 6], stale: true);
         }
     }
 
-    private function finish(object $sending, array $changes): void
+    private function finish(object $sending, array $changes, bool $stale = false): void
     {
-        DB::transaction(function () use ($sending, $changes): void {
+        DB::transaction(function () use ($sending, $changes, $stale): void {
             // Serialize aggregate updates for all sendings belonging to one message.
             $parent = Resource::Message->query()->where('id', $sending->message)->lockForUpdate()->first();
-            $updated = Resource::Sending->query()->where('id', $sending->id)->where('attempts', $sending->attempts)
-                ->whereIn('status', $changes['status'] === 6 ? [0, 1] : [2])
-                ->update([...$changes, 'claimedAt' => null, 'updatedAt' => now()]);
+            $expired = $changes['status'] === 6;
+            $query = Resource::Sending->query()->where('id', $sending->id)->where('attempts', $sending->attempts)
+                ->whereIn('status', $expired ? [0, 1] : [2]);
+            if ($stale) {
+                $query->where($expired ? 'expire' : 'claimedAt', $expired ? $sending->expire : $sending->claimedAt)
+                    ->where('updatedAt', $sending->updatedAt);
+            }
+            $updated = $query->update([...$changes, 'claimedAt' => null, 'updatedAt' => now()]);
             if ($updated && $parent !== null) {
                 self::refreshMessage($parent->id);
             }

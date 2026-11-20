@@ -2,6 +2,7 @@
     "name": "notification/homer",
     "description": "Homer notifications service",
     "type": "project",
+    "license": "proprietary",
     "require": {
         "php": "^8.4",
         "laravel/framework": "^12.0",

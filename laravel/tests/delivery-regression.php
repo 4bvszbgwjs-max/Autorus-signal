@@ -120,6 +120,17 @@ try {
         throw new RuntimeException('The worker claimed a child of a soft-deleted message.');
     }
 
+    $queued = ['channel' => $channel, 'destination' => 'synthetic-recipient', 'content' => 'Queued without a claim', 'status' => 2];
+    $stale = $request('POST', 'sending', $queued, 201)['data'];
+    $recent = $request('POST', 'sending', $queued, 201)['data'];
+    DB::table('sendings')->where('id', $stale['id'])->update(['updatedAt' => now()->subMinutes(10)]);
+    $app->make(App\Notifications\DeliverSendings::class)->batch(10);
+    $settled = DB::table('sendings')->where('id', $stale['id'])->first();
+    if ((int) $settled->status !== 5 || $settled->deliveryError !== 'delivery_outcome_unknown' || (int) $settled->attempts !== 0
+        || (int) DB::table('sendings')->where('id', $recent['id'])->value('status') !== 2) {
+        throw new RuntimeException('The worker did not settle only the stale sending without repeating delivery.');
+    }
+
     $request('DELETE', 'channel/'.$channel, [], 204);
     $request('GET', 'sending/'.$sending['id'], [], 404);
     $passed = true;

@@ -183,8 +183,21 @@ final class AdminSpreadsheet
             } while ($header === [null]);
             $delimiter = count($header ?: []) === 1 && str_contains($header[0] ?? '', ';') ? ';' : ',';
             fseek($file, $start);
-            while (($row = fgetcsv($file, separator: $delimiter, escape: '')) !== false) {
+            $record = 0;
+            while (true) {
+                $start = ftell($file);
+                $row = fgetcsv($file, separator: $delimiter, escape: '');
+                if ($row === false) {
+                    break;
+                }
+                $length = ftell($file) - $start;
+                fseek($file, $start);
+                // fgetcsv also returns values when a quoted field reaches EOF without a closing quote.
+                if (substr_count(fread($file, $length), '"') % 2 !== 0) {
+                    $this->invalid('Запись CSV '.($record + 1).' содержит незакрытую кавычку.');
+                }
                 if ($row !== [null]) {
+                    $record++;
                     yield $row;
                 }
             }
