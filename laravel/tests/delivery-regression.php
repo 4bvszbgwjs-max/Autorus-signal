@@ -1,9 +1,13 @@
 <?php
 
+use App\Notifications\PrepareSendings;
+use App\Notifications\Providers;
 use Illuminate\Contracts\Http\Kernel;
+use Illuminate\Http\Client\Request as ProviderRequest;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 
 require __DIR__.'/../vendor/autoload.php';
@@ -94,6 +98,16 @@ try {
     }
 
     (clone $row)->update(['status' => 3, 'claimedAt' => null]);
+    foreach ([0, 1, 2] as $queueStatus) {
+        $request('PATCH', 'sending/status', ['uuid' => $providerId, 'status' => $queueStatus], 400);
+    }
+    $request('PATCH', 'sending/status', [
+        ['uuid' => $providerId, 'status' => 'delivered'],
+        ['uuid' => $providerId, 'status' => 1],
+    ], 400);
+    if ((int) (clone $row)->value('status') !== 3) {
+        throw new RuntimeException('A rejected callback changed a sent record.');
+    }
     $request('PATCH', 'sending/status', ['uuid' => $providerId, 'status' => 'delivered'], 200);
     $request('PATCH', 'sending/status', ['uuid' => $providerId, 'status' => 'sent'], 200);
     if ((int) (clone $row)->value('status') !== 7 || (int) DB::table('messages')->where('id', $message['id'])->value('status') !== 7) {
@@ -109,6 +123,45 @@ try {
     $request('PATCH', 'sending/status', ['uuid' => $providerId, 'channel' => $otherChannel, 'status' => 'delivered'], 200);
     if ((int) DB::table('sendings')->where('id', $other['id'])->value('status') !== 7) {
         throw new RuntimeException('A channel-scoped callback did not update its sending.');
+    }
+
+    foreach ([4, 5, 6] as $failure) {
+        $parent = $request('POST', 'message', ['status' => 1], 200)['data'][0];
+        $child = ['message' => $parent['id'], 'content' => 'Multi-channel notification', 'status' => 3];
+        $request('POST', 'sending', $child + ['channel' => $channel], 201);
+        $failureUuid = (string) Str::uuid();
+        $request('POST', 'sending', $child + ['channel' => $otherChannel, 'uuid' => $failureUuid], 201);
+        $request('PATCH', 'sending/status', ['uuid' => $failureUuid, 'status' => $failure], 200);
+        if ((int) DB::table('messages')->where('id', $parent['id'])->value('status') !== $failure) {
+            throw new RuntimeException('A successful channel masked a failed or expired channel.');
+        }
+    }
+
+    $scenario = $request('POST', 'scenario', [
+        'messageType' => 2,
+        'byDefault' => true,
+        'channelsFirstOf' => [[
+            'channel' => $otherChannel, 'isActive' => true, 'fieldsConditions' => ['equalTrue' => ['isSubscribe']],
+        ]],
+    ], 201)['data'];
+    $direct = ['recipientId' => $phone, 'channels' => [$channel], 'mustBeSend' => '2099-01-01T00:00:00Z'];
+    $explicit = $request('POST', 'message', $direct + ['scenario_id' => $scenario['uuid']], 200)['data'][0];
+    $byType = $request('POST', 'message', $direct + ['type' => 2], 200)['data'][0];
+    $noScenario = $request('POST', 'message', $direct + ['type' => 0], 200)['data'][0];
+    $disabled = $request('POST', 'scenario', ['messageType' => 0, 'isDeleted' => true], 201)['data'];
+    $explicitDisabled = $request('POST', 'message', $direct + ['scenario_id' => $disabled['uuid']], 200)['data'][0];
+    $app->make(PrepareSendings::class)->batch(100);
+    foreach ([$explicit['id'], $byType['id'], $explicitDisabled['id']] as $blocked) {
+        $prepared = $request('GET', 'message/'.$blocked, [], 200)['data'];
+        if ((int) $prepared['status'] !== 4 || $prepared['channels'] !== [] || DB::table('sendings')->where('message', $blocked)->exists()) {
+            throw new RuntimeException('The worker used a direct channel despite a selected scenario.');
+        }
+    }
+    if (DB::table('messages')->where('id', $explicitDisabled['id'])->value('scenario_id') !== $disabled['uuid']) {
+        throw new RuntimeException('The worker lost the explicitly selected disabled scenario.');
+    }
+    if (! DB::table('sendings')->where('message', $noScenario['id'])->where('channel', $channel)->exists()) {
+        throw new RuntimeException('The worker ignored direct channels on a message without a scenario.');
     }
 
     $request('POST', 'sending', [
@@ -131,6 +184,25 @@ try {
         throw new RuntimeException('The worker did not settle only the stale sending without repeating delivery.');
     }
 
+    $sms = 'https://sms.example.invalid/send';
+    $push = 'https://push.example.invalid/send';
+    Http::preventStrayRequests();
+    Http::fake([
+        $sms => Http::response(['items' => [['messageUuid' => 'synthetic-sms']]]),
+        $push => Http::response(['results' => [['message_id' => 'synthetic-push']]]),
+    ]);
+    $providers = $app->make(Providers::class);
+    $sample = (object) ['destination' => 'test-address', 'subject' => 'Subject', 'content' => 'Synthetic body'];
+    foreach (['smsIdgtl' => $sms, 'pushFirebase' => $push] as $sender => $url) {
+        $providers->send($sender, ['url' => $url], $sample, null);
+        $providers->send($sender, ['url' => $url, 'method' => 'PUT'], $sample, null);
+        if (Http::recorded(fn (ProviderRequest $call) => $call->url() === $url && $call->method() === 'POST'
+            && str_contains($call->body(), 'Synthetic body'))->count() !== 1
+            || Http::recorded(fn (ProviderRequest $call) => $call->url() === $url && $call->method() === 'PUT')->count() !== 1) {
+            throw new RuntimeException('A provider did not send JSON with POST by default or ignored an explicit method.');
+        }
+    }
+
     $request('DELETE', 'channel/'.$channel, [], 204);
     $request('GET', 'sending/'.$sending['id'], [], 404);
     $passed = true;
@@ -144,4 +216,4 @@ if (! $passed) {
     exit(1);
 }
 
-echo "Delivery callbacks, channel routes and cascade checks passed.\n";
+echo "Delivery callbacks, aggregate statuses, scenario rules, provider methods and cascade checks passed.\n";

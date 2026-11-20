@@ -112,7 +112,7 @@ final class Providers
             'senderName' => $config['senderName'] ?? 'autorus.ru',
             'destination' => $sending->destination,
             'content' => $sending->content,
-        ]], 'get')->json();
+        ]], 'post')->json();
         if (! is_array($response)) {
             throw new DeliveryFailure('sms_result_unknown', uncertain: true);
         }
@@ -164,7 +164,7 @@ final class Providers
             'time_to_live' => 3600,
             'data' => ['score' => '3x1', 'title' => $sending->subject, 'body' => $sending->content],
             'notification' => ['title' => $sending->subject, 'body' => $sending->content, 'sound' => 'default', 'click_action' => 'arus_notification'],
-        ], 'get')->json();
+        ], 'post')->json();
         if (! is_array($response)) {
             throw new DeliveryFailure('firebase_result_unknown', uncertain: true);
         }

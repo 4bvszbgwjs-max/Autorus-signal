@@ -131,10 +131,15 @@ final class DeliverSendings
 
     public static function refreshMessage(int $id): void
     {
-        $status = Resource::Sending->query()->where('message', $id)->min('status');
-        if ($status !== null) {
-            // A prepared message remains READY until all its sendings reach the queue.
-            Resource::Message->query()->where('id', $id)->update(['status' => max(1, $status), 'updatedAt' => now()]);
+        $summary = Resource::Sending->query()->where('message', $id)
+            ->selectRaw('min(status) as earliest, min(status) filter (where status between 4 and 6) as failure')
+            ->first();
+        if ($summary->earliest === null) {
+            return;
         }
+
+        // Keep the current progress while work is pending. A completed delivery exposes any failed channel.
+        $status = $summary->earliest < 3 ? max(1, $summary->earliest) : ($summary->failure ?? $summary->earliest);
+        Resource::Message->query()->where('id', $id)->update(['status' => $status, 'updatedAt' => now()]);
     }
 }

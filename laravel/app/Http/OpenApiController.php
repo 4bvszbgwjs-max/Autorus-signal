@@ -76,6 +76,8 @@ final class OpenApiController
                 $operation, 200, $operation === 'list_recipient_phones' ? null : $singleOrBatch, [409],
             );
         }
+        $paths['/api/v1/sending/status/']['patch']['description'] =
+            'Accepts provider statuses as numbers from 3 through 8 or supported status names. Queue statuses 0 through 2 are rejected.';
 
         return response()->json([
             'openapi' => '3.0.3',
