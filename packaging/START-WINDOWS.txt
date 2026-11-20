@@ -1,0 +1,42 @@
+﻿Авторусь Сигнал на Windows
+Версия из GitHub main — 99b4318
+
+1. В Проводнике распакуйте папку Signal из архива в свою домашнюю папку.
+   Например, C:\Users\имя\Signal. Проверьте наличие файла Signal\laravel\artisan.
+   Старую папку Homer оставьте как резервную копию.
+
+2. Если старая админка запущена, нажмите Ctrl+C в окне PowerShell с веб-сервером.
+   PostgreSQL оставьте запущенным.
+
+3. В новом окне PowerShell выполните:
+
+   Set-Location -LiteralPath "$env:USERPROFILE\Signal\laravel"
+   Copy-Item -LiteralPath "$env:USERPROFILE\Homer\laravel\.env" -Destination .env
+   $php = "$env:USERPROFILE\php84\php.exe"
+   & $php artisan --version
+   & $php artisan migrate
+
+   Если старая копия находится в другой папке, укажите в Copy-Item фактический
+   путь к старому .env. Если в новой папке уже настроен .env, пропустите Copy-Item.
+   Со старым .env сохранятся подключение к базе, APP_KEY и пароль админки.
+
+4. После успешного завершения миграций запустите:
+
+   & $php artisan serve --host=127.0.0.1 --port=8000
+
+   Оставьте окно открытым. В браузере перейдите на http://127.0.0.1:8000/admin.
+
+Зависимости уже включены. Для локальной админки нужны PHP 8.4 и PostgreSQL.
+Composer, Docker, Octane и RabbitMQ для такого запуска не нужны.
+Фоновые отправки и планировщик при этом не запускаются.
+
+Если PHP сообщит, что для XLSX отсутствует расширение zip, откройте файл:
+
+   notepad "$env:USERPROFILE\php84\php.ini"
+
+Найдите строку ;extension=zip, уберите ; и сохраните файл. Проверить нужные
+расширения можно так:
+
+   & $php -m | Select-String '^(dom|fileinfo|pdo_pgsql|xmlreader|zip)$'
+
+В архиве нет вашего .env и данных PostgreSQL.

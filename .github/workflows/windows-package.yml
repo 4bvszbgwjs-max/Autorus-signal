@@ -1,0 +1,41 @@
+name: Autorus Signal for Windows
+
+on:
+  push:
+    branches: [download/autorus-signal-windows]
+    paths: [.github/workflows/windows-package.yml, packaging/START-WINDOWS.txt]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Build locked dependencies
+        run: docker build -t signal-windows:local laravel
+      - name: Assemble and verify the ZIP
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = 99b4318c1f7f0c7990ea9533ad5ecdd3ba94ce72
+          git diff --exit-code HEAD^ HEAD -- laravel
+          mkdir -p offline/Signal
+          git archive HEAD laravel | tar -x -C offline/Signal
+          cp packaging/START-WINDOWS.txt offline/Signal/
+          container=$(docker create signal-windows:local)
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/app/vendor" offline/Signal/laravel/vendor
+          docker run --rm --network none -v "$PWD/offline/Signal/laravel:/app:ro" --tmpfs /app/bootstrap/cache --tmpfs /app/storage/logs -w /app --entrypoint php signal-windows:local artisan --version
+          test ! -e offline/Signal/laravel/.env
+          cd offline
+          zip -qr Autorus-Signal-99b4318-Windows.zip Signal
+          unzip -tq Autorus-Signal-99b4318-Windows.zip
+      - name: Upload the checked ZIP to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload windows-99b4318 offline/Autorus-Signal-99b4318-Windows.zip --repo "$GITHUB_REPOSITORY"
