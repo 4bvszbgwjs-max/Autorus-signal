@@ -2,18 +2,20 @@
 
 namespace App\Notifications;
 
+use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
 
 final class PurgeExpired
 {
+    public function preview(int $limit): int
+    {
+        return DB::query()->fromSub($this->candidates($limit), 'expired_messages')->count();
+    }
+
     public function batch(int $limit): int
     {
         return DB::transaction(function () use ($limit): int {
-            $ids = Resource::Message->query()->where('expire', '<=', now())
-                ->whereNotExists(fn ($query) => $query->from('sendings')
-                    ->whereColumn('sendings.message', 'messages.id')->whereNotNull('claimedAt'))
-                ->orderBy('expire')->orderBy('id')->limit($limit)
-                ->lock('for update skip locked')->pluck('id');
+            $ids = $this->candidates($limit)->lock('for update skip locked')->pluck('id');
             if ($ids->isEmpty()) {
                 return 0;
             }
@@ -26,5 +28,13 @@ final class PurgeExpired
 
             return Resource::Message->query()->whereIn('id', $eligible)->delete();
         }, 3);
+    }
+
+    private function candidates(int $limit): Builder
+    {
+        return Resource::Message->query()->select('id')->where('expire', '<=', now())
+            ->whereNotExists(fn (Builder $query) => $query->from('sendings')
+                ->whereColumn('sendings.message', 'messages.id')->whereNotNull('claimedAt'))
+            ->orderBy('expire')->orderBy('id')->limit($limit);
     }
 }
