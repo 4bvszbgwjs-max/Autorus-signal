@@ -5,7 +5,7 @@ cd "$(dirname "$0")/.."
 
 image="${1:-homer-octane:local}"
 # An exported deployment setting must not override the isolated test configuration.
-unset APP_ENV APP_KEY APP_URL HOMER_IMAGE HOMER_HTTP_PORT HOMER_API_TOKEN HOMER_ADMIN_PASSWORD_HASH
+unset APP_ENV APP_KEY APP_URL HOMER_IMAGE HOMER_HTTP_PORT HOMER_API_TOKEN HOMER_ADMIN_PASSWORD_HASH HOMER_PURGE_EXPIRED
 unset POSTGRES_PASSWORD RABBITMQ_PASSWORD RMQ_CREATE_MESSAGE_EXCHANGE
 env_file="$(mktemp)"
 chmod 600 "$env_file"

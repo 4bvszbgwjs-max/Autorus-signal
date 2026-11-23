@@ -5,6 +5,7 @@ use App\Notifications\Providers;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Client\Request as ProviderRequest;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -203,6 +204,46 @@ try {
         }
     }
 
+    $subjects = [
+        'expired-oldest' => now()->subDays(3),
+        'expired-next' => now()->subDays(2),
+        'expired-claimed' => now()->subDays(4),
+        'still-current' => now()->addDay(),
+    ];
+    $purgeRows = [];
+    foreach ($subjects as $subject => $expire) {
+        $parent = $request('POST', 'message', ['subject' => $subject, 'status' => 1, 'expire' => $expire->toIso8601String()], 200)['data'][0];
+        $child = $request('POST', 'sending', [
+            'channel' => $channel, 'message' => $parent['id'], 'content' => 'Cleanup regression', 'status' => 1,
+            'expire' => $expire->toIso8601String(),
+        ], 201)['data'];
+        $purgeRows[$subject] = ['message' => $parent['id'], 'sending' => $child['id']];
+    }
+    DB::table('sendings')->where('id', $purgeRows['expired-claimed']['sending'])->update(['status' => 2, 'claimedAt' => now()]);
+
+    if (Artisan::call('homer:purge-expired', ['--dry-run' => true, '--limit' => 0]) !== 1
+        || Artisan::call('homer:purge-expired', ['--dry-run' => true, '--limit' => 10]) !== 0
+        || trim(Artisan::output()) !== 'Eligible messages in this batch: 2'
+        || Artisan::call('homer:purge-expired', ['--dry-run' => true, '--limit' => 1]) !== 0
+        || trim(Artisan::output()) !== 'Eligible messages in this batch: 1') {
+        throw new RuntimeException('The cleanup preview ignored eligibility or the batch limit.');
+    }
+    foreach ($purgeRows as $ids) {
+        foreach ($ids as $resource => $id) {
+            $request('GET', $resource.'/'.$id, [], 200);
+        }
+    }
+
+    if (Artisan::call('homer:purge-expired', ['--limit' => 1]) !== 0 || trim(Artisan::output()) !== 'Purged messages: 1') {
+        throw new RuntimeException('Cleanup did not delete exactly one expired message.');
+    }
+    foreach ($purgeRows as $subject => $ids) {
+        foreach ($ids as $resource => $id) {
+            $request('GET', $resource.'/'.$id, [], $subject === 'expired-oldest' ? 404 : 200);
+        }
+    }
+    DB::table('sendings')->where('id', $purgeRows['expired-claimed']['sending'])->update(['status' => 6, 'claimedAt' => null]);
+
     $request('DELETE', 'channel/'.$channel, [], 204);
     $request('GET', 'sending/'.$sending['id'], [], 404);
     $passed = true;
@@ -216,4 +257,4 @@ if (! $passed) {
     exit(1);
 }
 
-echo "Delivery callbacks, aggregate statuses, scenario rules, provider methods and cascade checks passed.\n";
+echo "Delivery callbacks, aggregate statuses, scenario rules, provider methods, cleanup and cascade checks passed.\n";
