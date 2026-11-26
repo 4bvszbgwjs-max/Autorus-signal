@@ -226,6 +226,11 @@ try {
             throw new RuntimeException('A provider did not send JSON with POST by default or ignored an explicit method.');
         }
     }
+    $mixedCaseId = $providers->send('smsIdgtl', ['url' => 'https://PUBLIC.Provider.INVALID./sms'], $sample, null);
+    if ($mixedCaseId !== 'synthetic-sms'
+        || Http::recorded(fn (ProviderRequest $call) => $call->url() === $sms && $call->method() === 'POST')->count() !== 2) {
+        throw new RuntimeException('A mixed-case provider URL did not use the canonical host.');
+    }
     $providers->send('emailRetailRocket', ['url' => $retail.'?mode=synthetic', 'apikey' => 'synthetic-key'], $sample,
         (object) ['metadata' => '{"campaignId":42,"synthetic":true}']);
     $retailCalls = Http::recorded(function (ProviderRequest $call) use ($retail): bool {
@@ -240,7 +245,9 @@ try {
     }
 
     $options = $app->make(ProviderHttpEndpoint::class)->options('public.provider.invalid', 443);
+    $mixedCaseOptions = $app->make(ProviderHttpEndpoint::class)->options('PUBLIC.Provider.INVALID.', 443);
     if ($options['curl'][CURLOPT_RESOLVE] !== ['public.provider.invalid:443:93.184.216.34']
+        || $mixedCaseOptions !== $options
         || ! $options['curl'][CURLOPT_FRESH_CONNECT] || ! $options['curl'][CURLOPT_FORBID_REUSE]
         || $options['curl'][CURLOPT_PROXY] !== '') {
         throw new RuntimeException('Provider connection was not pinned to the validated address.');

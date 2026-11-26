@@ -1,7 +1,8 @@
 FROM composer:2 AS composer
 FROM dunglas/frankenphp:1-php8.4
 
-RUN install-php-extensions pdo_pgsql pcntl sockets zip
+RUN install-php-extensions curl pdo_pgsql pcntl sockets zip && \
+    php -r 'foreach (["curl_exec", "curl_multi_exec", "socket_addrinfo_lookup", "socket_addrinfo_explain"] as $function) { if (!function_exists($function)) { fwrite(STDERR, "Missing PHP function: $function\n"); exit(1); } }'
 COPY --from=composer /usr/bin/composer /usr/local/bin/composer
 
 WORKDIR /app
