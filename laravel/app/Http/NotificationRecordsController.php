@@ -6,13 +6,17 @@ use App\Notifications\NotificationRecords;
 use App\Notifications\Resource;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Validator;
 use Symfony\Component\HttpFoundation\Response;
 
 final class NotificationRecordsController
 {
     public function createSending(Request $request, NotificationRecords $records): JsonResponse
     {
-        return $this->respond($records->saveSending(JsonPayload::object($request->getContent())), 201);
+        $input = JsonPayload::object($request->getContent());
+        Validator::make($input, ['status' => 'missing'])->validate();
+
+        return $this->respond($records->saveSending($input), 201);
     }
 
     public function update(Request $request, NotificationRecords $records, string $record, string $key): JsonResponse
@@ -20,6 +24,7 @@ final class NotificationRecordsController
         $id = $this->id($key);
         $replace = $request->isMethod('PUT');
         $input = get_object_vars(JsonPayload::singleObject($request->getContent()));
+        Validator::make($input, ['status' => 'missing'])->validate();
         $data = match (Resource::from($record)) {
             Resource::Message => $records->updateMessage($id, $input),
             Resource::Sending => $records->saveSending($input, $id, $replace),

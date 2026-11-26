@@ -1,9 +1,9 @@
 <?php
 
+use App\Notifications\DeliveryFailure;
 use App\Notifications\MessageIntake;
 use App\Notifications\RabbitMq;
 use Illuminate\Contracts\Console\Kernel;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
@@ -54,31 +54,62 @@ try {
         throw new RuntimeException('The invalid intake was queued again or persisted.');
     }
 
+    $failures = 1;
+    $attempts = 0;
+    $onFailure = null;
+    $sqlstate = '08006';
+    DB::connection()->beforeExecuting(function (string $sql) use (&$failures, &$attempts, &$onFailure, &$sqlstate): void {
+        if (str_starts_with($sql, 'insert into messages') && $failures > 0) {
+            $failures--;
+            $attempts++;
+            $onFailure?->__invoke();
+            $error = new PDOException('Synthetic database interruption.');
+            $error->errorInfo = [$sqlstate];
+
+            throw $error;
+        }
+    });
     $rabbit->publish($url, $recoveryExchange, '', ['eventId' => 'retry-intake'], 'retry-intake');
-    $connectionName = DB::getDefaultConnection();
-    $databaseConfig = 'database.connections.'.$connectionName.'.database';
-    $originalDatabase = config($databaseConfig);
-    config([$databaseConfig => 'synthetic_unavailable_database']);
-    DB::purge($connectionName);
-    try {
-        $rabbit->consume($intake, $url, $recoveryExchange, once: true);
-        throw new RuntimeException('Expected intake to fail with PostgreSQL unavailable.');
-    } catch (QueryException|PDOException) {
-        // The recovery consumer must see the delivery after the failing consumer exits.
-    } finally {
-        config([$databaseConfig => $originalDatabase]);
-        DB::purge($connectionName);
-    }
-    $requeued = $channel->basic_get($recoveryExchange);
-    if ($requeued === null || ! $requeued->isRedelivered()
-        || DB::table('messages')->where('eventId', 'retry-intake')->exists()) {
-        throw new RuntimeException('A failed transaction did not leave a redeliverable message.');
-    }
-    $requeued->reject(true);
     $rabbit->consume($intake, $url, $recoveryExchange, once: true);
-    if (DB::table('messages')->where('eventId', 'retry-intake')->count() !== 1
+    if ($attempts !== 1 || DB::table('messages')->where('eventId', 'retry-intake')->count() !== 1
         || $channel->basic_get($recoveryExchange, true) !== null) {
         throw new RuntimeException('The recovery consumer did not persist and acknowledge the message.');
+    }
+
+    $failures = 10;
+    $attempts = 0;
+    $rabbit->publish($url, $recoveryExchange, '', ['eventId' => 'failed-intake'], 'failed-intake');
+    $rabbit->consume($intake, $url, $recoveryExchange, once: true);
+    $failed = $channel->basic_get($recoveryExchange.'.failed', true);
+    if ($attempts !== 4 || $failed === null || $failed->get('message_id') !== 'failed-intake'
+        || json_decode($failed->getBody(), true) !== ['eventId' => 'failed-intake']
+        || $failed->get('application_headers')->getNativeData()['signal-intake-attempts'] !== 4
+        || DB::table('messages')->where('eventId', 'failed-intake')->exists()
+        || $channel->basic_get($recoveryExchange, true) !== null) {
+        throw new RuntimeException('The exhausted message was not moved to the failed queue after four attempts.');
+    }
+    $sqlstate = '3D000';
+    $failures = 1;
+    $attempts = 0;
+    $onFailure = fn () => $channel->queue_delete($recoveryExchange.'.failed');
+    $rabbit->publish($url, $recoveryExchange, '', ['eventId' => 'unconfirmed-intake'], 'unconfirmed-intake');
+    try {
+        $rabbit->consume($intake, $url, $recoveryExchange, once: true);
+        throw new RuntimeException('Expected the failed queue publish to be unroutable.');
+    } catch (DeliveryFailure $error) {
+        if ($error->getMessage() !== 'unroutable') {
+            throw $error;
+        }
+    }
+    $redelivered = $channel->basic_get($recoveryExchange);
+    if ($attempts !== 1 || $redelivered === null || ! $redelivered->isRedelivered()
+        || DB::table('messages')->where('eventId', 'unconfirmed-intake')->exists()) {
+        throw new RuntimeException('An unconfirmed publish failed to preserve the original delivery.');
+    }
+    $redelivered->reject(true);
+    $rabbit->consume($intake, $url, $recoveryExchange, once: true);
+    if (DB::table('messages')->where('eventId', 'unconfirmed-intake')->count() !== 1) {
+        throw new RuntimeException('An unconfirmed original could not be redelivered.');
     }
 
     $eventId = 'compose-smoke';
