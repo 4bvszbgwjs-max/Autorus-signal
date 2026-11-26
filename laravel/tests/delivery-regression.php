@@ -1,6 +1,8 @@
 <?php
 
+use App\Notifications\DeliveryFailure;
 use App\Notifications\PrepareSendings;
+use App\Notifications\ProviderHttpEndpoint;
 use App\Notifications\Providers;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Client\Request as ProviderRequest;
@@ -81,6 +83,12 @@ try {
         throw new RuntimeException('An explicit clear did not remove the Firebase token.');
     }
     $message = $request('POST', 'message', ['recipientId' => 'synthetic-recipient'], 200)['data'][0];
+    $request('POST', 'message', ['status' => 8], 400);
+    $request('POST', 'message', [['status' => null], ['subject' => 'Synthetic batch']], 400);
+    $page = $request('GET', 'message?limit=1', [], 200);
+    if ($message['status'] !== 0 || $page['meta']['limit'] !== 1 || count($page['data']) !== 1) {
+        throw new RuntimeException('New notifications or explicit page size violate the API contract.');
+    }
     $sending = $request('POST', 'sending', [
         'channel' => $channel,
         'message' => $message['id'],
@@ -127,7 +135,8 @@ try {
     }
 
     foreach ([4, 5, 6] as $failure) {
-        $parent = $request('POST', 'message', ['status' => 1], 200)['data'][0];
+        $parent = $request('POST', 'message', ['isDeleted' => true], 200)['data'][0];
+        $request('PATCH', 'message/'.$parent['id'], ['status' => 1, 'isDeleted' => false], 200);
         $child = ['message' => $parent['id'], 'content' => 'Multi-channel notification', 'status' => 3];
         $request('POST', 'sending', $child + ['channel' => $channel], 201);
         $failureUuid = (string) Str::uuid();
@@ -151,8 +160,11 @@ try {
     $noScenario = $request('POST', 'message', $direct + ['type' => 0], 200)['data'][0];
     $disabled = $request('POST', 'scenario', ['messageType' => 0, 'isDeleted' => true], 201)['data'];
     $explicitDisabled = $request('POST', 'message', $direct + ['scenario_id' => $disabled['uuid']], 200)['data'][0];
+    $removed = $request('POST', 'scenario', ['messageType' => 0], 201)['data'];
+    $explicitRemoved = $request('POST', 'message', $direct + ['scenario_id' => $removed['uuid']], 200)['data'][0];
+    $request('DELETE', 'scenario/'.$removed['id'], [], 204);
     $app->make(PrepareSendings::class)->batch(100);
-    foreach ([$explicit['id'], $byType['id'], $explicitDisabled['id']] as $blocked) {
+    foreach ([$explicit['id'], $byType['id'], $explicitDisabled['id'], $explicitRemoved['id']] as $blocked) {
         $prepared = $request('GET', 'message/'.$blocked, [], 200)['data'];
         if ((int) $prepared['status'] !== 4 || $prepared['channels'] !== [] || DB::table('sendings')->where('message', $blocked)->exists()) {
             throw new RuntimeException('The worker used a direct channel despite a selected scenario.');
@@ -161,6 +173,11 @@ try {
     if (DB::table('messages')->where('id', $explicitDisabled['id'])->value('scenario_id') !== $disabled['uuid']) {
         throw new RuntimeException('The worker lost the explicitly selected disabled scenario.');
     }
+    if (DB::table('messages')->where('id', $explicitRemoved['id'])->value('scenario_id') !== $removed['uuid']) {
+        throw new RuntimeException('Physical deletion removed the explicit scenario UUID from a pending notification.');
+    }
+    $request('PATCH', 'message/'.$explicitRemoved['id'], ['scenario_id' => $removed['uuid'], 'subject' => 'Still editable'], 200);
+    $request('PATCH', 'message/'.$noScenario['id'], ['scenario_id' => $removed['uuid']], 400);
     if (! DB::table('sendings')->where('message', $noScenario['id'])->where('channel', $channel)->exists()) {
         throw new RuntimeException('The worker ignored direct channels on a message without a scenario.');
     }
@@ -185,12 +202,18 @@ try {
         throw new RuntimeException('The worker did not settle only the stale sending without repeating delivery.');
     }
 
-    $sms = 'https://sms.example.invalid/send';
-    $push = 'https://push.example.invalid/send';
+    $sms = 'https://public.provider.invalid/sms';
+    $push = 'https://public.provider.invalid/push';
+    $retail = 'https://public.provider.invalid/retail';
+    config(['homer.provider_http_hosts' => [
+        'public.provider.invalid', 'private.provider.invalid', 'mixed.provider.invalid', 'metadata.provider.invalid',
+        'ipv6.provider.invalid', 'multicast.provider.invalid',
+    ]]);
     Http::preventStrayRequests();
     Http::fake([
         $sms => Http::response(['items' => [['messageUuid' => 'synthetic-sms']]]),
         $push => Http::response(['results' => [['message_id' => 'synthetic-push']]]),
+        $retail.'/*' => Http::response([], 200),
     ]);
     $providers = $app->make(Providers::class);
     $sample = (object) ['destination' => 'test-address', 'subject' => 'Subject', 'content' => 'Synthetic body'];
@@ -203,6 +226,44 @@ try {
             throw new RuntimeException('A provider did not send JSON with POST by default or ignored an explicit method.');
         }
     }
+    $providers->send('emailRetailRocket', ['url' => $retail.'?mode=synthetic', 'apikey' => 'synthetic-key'], $sample,
+        (object) ['metadata' => '{"campaignId":42,"synthetic":true}']);
+    $retailCalls = Http::recorded(function (ProviderRequest $call) use ($retail): bool {
+        parse_str((string) parse_url($call->url(), PHP_URL_QUERY), $query);
+
+        return strtok($call->url(), '?') === $retail.'/42' && $call->method() === 'GET'
+            && $query == ['mode' => 'synthetic', 'apikey' => 'synthetic-key', 'email' => 'test-address']
+            && json_decode($call->body(), true) === ['campaignId' => 42, 'synthetic' => true];
+    });
+    if ($retailCalls->count() !== 1) {
+        throw new RuntimeException('Retail Rocket did not receive the expected path, query and JSON body.');
+    }
+
+    $options = $app->make(ProviderHttpEndpoint::class)->options('public.provider.invalid', 443);
+    if ($options['curl'][CURLOPT_RESOLVE] !== ['public.provider.invalid:443:93.184.216.34']
+        || ! $options['curl'][CURLOPT_FRESH_CONNECT] || ! $options['curl'][CURLOPT_FORBID_REUSE]
+        || $options['curl'][CURLOPT_PROXY] !== '') {
+        throw new RuntimeException('Provider connection was not pinned to the validated address.');
+    }
+    foreach ([
+        [['url' => 'http://127.0.0.1/'], 'provider_host_not_allowed'],
+        [['url' => 'http://different.provider.invalid/'], 'provider_host_not_allowed'],
+        [['url' => 'http://private.provider.invalid/'], 'provider_address_not_allowed'],
+        [['url' => 'http://mixed.provider.invalid/'], 'provider_address_not_allowed'],
+        [['url' => 'http://metadata.provider.invalid/'], 'provider_address_not_allowed'],
+        [['url' => 'http://ipv6.provider.invalid/'], 'provider_address_not_allowed'],
+        [['url' => 'http://multicast.provider.invalid/'], 'provider_address_not_allowed'],
+        [['url' => $sms, 'headers' => ['hOsT' => 'different.provider.invalid']], 'invalid_http_configuration'],
+    ] as [$config, $code]) {
+        try {
+            $providers->send('smsIdgtl', $config, $sample, null);
+            throw new RuntimeException('An unsafe provider request reached the HTTP client.');
+        } catch (DeliveryFailure $failure) {
+            if ($failure->getMessage() !== $code) {
+                throw $failure;
+            }
+        }
+    }
 
     $subjects = [
         'expired-oldest' => now()->subDays(3),
@@ -212,7 +273,7 @@ try {
     ];
     $purgeRows = [];
     foreach ($subjects as $subject => $expire) {
-        $parent = $request('POST', 'message', ['subject' => $subject, 'status' => 1, 'expire' => $expire->toIso8601String()], 200)['data'][0];
+        $parent = $request('POST', 'message', ['subject' => $subject, 'expire' => $expire->toIso8601String()], 200)['data'][0];
         $child = $request('POST', 'sending', [
             'channel' => $channel, 'message' => $parent['id'], 'content' => 'Cleanup regression', 'status' => 1,
             'expire' => $expire->toIso8601String(),

@@ -24,11 +24,24 @@ final class RabbitMq
             $channel->queue_bind($exchange, $exchange, '');
             $channel->basic_qos(0, 10, false);
             $channel->basic_consume($exchange, '', false, false, false, false, function (AMQPMessage $message) use ($intake, $once): void {
+                $processed = false;
                 try {
                     $intake->create(array_map('get_object_vars', JsonPayload::objects($message->getBody())));
-                    $message->ack();
+                    $processed = true;
                 } catch (ValidationException) {
                     $message->reject(false);
+                } catch (Throwable $error) {
+                    logger()->warning('RabbitMQ intake failed. Delivery will be requeued.', [
+                        'error_class' => $error::class,
+                        'redelivered' => $message->isRedelivered(),
+                    ]);
+                    $message->reject(true);
+
+                    // Leave the loop so the broker cannot immediately redeliver to this consumer.
+                    throw $error;
+                }
+                if ($processed) {
+                    $message->ack();
                 }
 
                 if ($once) {

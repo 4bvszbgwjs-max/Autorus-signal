@@ -14,7 +14,7 @@ final class OpenApiController
         $pagination = [
             ['name' => 'page', 'in' => 'query', 'schema' => ['type' => 'integer', 'minimum' => 1]],
             ['name' => 'limit', 'in' => 'query', 'schema' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 1000],
-                'description' => 'Limits the returned records. For Django compatibility meta.limit reports the default size (100).'],
+                'description' => 'Limits the returned records. meta.limit reports the effective page size (default 100).'],
         ];
 
         $ping = $this->operation('getPing', 200);
@@ -59,6 +59,9 @@ final class OpenApiController
                 ? ['oneOf' => [$input, ['type' => 'array', 'items' => $input]]]
                 : $input;
             $paths[$base]['post'] = $this->operation('create_'.$resource, $resource === 'message' ? 200 : 201, $create);
+            if ($resource === 'message') {
+                $paths[$base]['post']['description'] = 'New notifications always start at status 0. Omit status from the request, including batch items.';
+            }
             unset($input['required']);
             $paths[$detail]['patch'] = $this->operation('patch_'.$resource, 200, $input, [404, 409]);
             $paths[$detail]['put'] = $this->operation('replace_'.$resource, 200, $resource === 'sending' ? $this->input($resource) : $input, [404, 409]);

@@ -59,7 +59,7 @@ def main():
 
     matches = differences = 0
 
-    def compare(label, method, path, payload=None):
+    def compare(label, method, path, payload=None, expected_limits=None):
         nonlocal matches, differences
         paths = (path, path) if isinstance(path, str) else path
         results = [
@@ -70,7 +70,14 @@ def main():
         if label == "OpenAPI availability":
             left = (left[0], None)
             right = (right[0], None)
-        if (left[0], normalize(left[1])) == (right[0], normalize(right[1])):
+        normalized = [normalize(left[1]), normalize(right[1])]
+        limits_match = expected_limits is None
+        if expected_limits is not None and left[0] == right[0] == 200:
+            actual_limits = tuple(item.get("meta", {}).get("limit") if isinstance(item, dict) else None for item in normalized)
+            limits_match = actual_limits == expected_limits
+            if limits_match:
+                normalized = [{**item, "meta": {**item["meta"], "limit": None}} for item in normalized]
+        if left[0] == right[0] and normalized[0] == normalized[1] and limits_match:
             matches += 1
             print(f"OK   {label} ({left[0]})")
         else:
@@ -121,7 +128,8 @@ def main():
     second_message = compare("Second message create", "POST", "api/v1/message/", {
         **message, "eventId": event_id + "-second", "uuid": str(uuid4()),
     })
-    compare("Explicit page size", "GET", f"api/v1/message/?subject={event_id}&limit=1")
+    compare("Explicit page size (meta.limit: Django 100, Laravel 1)", "GET",
+            f"api/v1/message/?subject={event_id}&limit=1", expected_limits=(100, 1))
     compare("Second message delete", "DELETE", detail("message", second_message))
     compare("Message metadata update", "PATCH", detail("message", created), {"metadata": {"empty": {}}})
     scenario = compare("Scenario create", "POST", "api/v1/scenario/", {
