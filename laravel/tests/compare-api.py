@@ -56,15 +56,18 @@ def main():
     token = os.environ.get("HOMER_API_TOKEN")
     if not token:
         parser.error("Set HOMER_API_TOKEN for the Laravel instance.")
+    callback_token = os.environ.get("HOMER_CALLBACK_API_TOKEN")
+    if not callback_token or callback_token == token:
+        parser.error("Set a separate HOMER_CALLBACK_API_TOKEN for the Laravel callbacks.")
 
     matches = differences = 0
 
-    def compare(label, method, path, payload=None, expected_limits=None):
+    def compare(label, method, path, payload=None, expected_limits=None, callback=False):
         nonlocal matches, differences
         paths = (path, path) if isinstance(path, str) else path
         results = [
             request(args.django, method, paths[0], payload),
-            request(args.laravel, method, paths[1], payload, token),
+            request(args.laravel, method, paths[1], payload, callback_token if callback else token),
         ]
         left, right = results
         if label == "OpenAPI availability":
@@ -149,8 +152,9 @@ def main():
         "channel": channel, "uuid": message_id, "destination": phone,
         "content": "Synthetic", "expire": expires, "mustBeSend": scheduled,
     })
-    compare("Sending update", "PATCH", detail("sending", sending), {"status": 3})
-    compare("Sending callback", "PATCH", "api/v1/sending/status/", [{"messageUuid": message_id, "status": "delivered"}])
+    compare("Sending update", "PATCH", detail("sending", sending), {"subject": "Changed by contract test"})
+    compare("Sending callback", "PATCH", "api/v1/sending/status/",
+            [{"messageUuid": message_id, "status": "delivered"}], callback=True)
     compare("Sending delete", "DELETE", detail("sending", sending))
     compare("Message delete", "DELETE", detail("message", created))
     compare("Recipient delete", "DELETE", detail("recipient", recipient))

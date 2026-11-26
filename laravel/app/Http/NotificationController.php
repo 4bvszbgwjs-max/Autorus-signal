@@ -126,19 +126,19 @@ final class NotificationController
         ])->validate();
 
         $result = DB::transaction(function () use ($validated, $records): array {
-            $updated = [];
-            $sendings = Resource::Sending->query()->where(function ($query) use ($validated): void {
-                foreach ($validated['items'] as $item) {
-                    $query->orWhere(function ($target) use ($item): void {
-                        $target->where('uuid', $item['uuid'])->when(
-                            isset($item['channel']), fn ($byChannel) => $byChannel->where('channel', $item['channel']),
-                        );
-                    });
-                }
-            });
             if ($validated['items'] === []) {
                 return [];
             }
+            $updated = [];
+            [$unscoped, $scoped] = collect($validated['items'])->partition(fn (array $item) => $item['channel'] === null);
+            $sendings = Resource::Sending->query()->where(function ($query) use ($unscoped, $scoped): void {
+                if ($unscoped->isNotEmpty()) {
+                    $query->whereIn('uuid', $unscoped->pluck('uuid')->uniqueStrict()->values());
+                }
+                foreach ($scoped as $item) {
+                    $query->orWhere(fn ($target) => $target->where('uuid', $item['uuid'])->where('channel', $item['channel']));
+                }
+            });
             $parentIds = (clone $sendings)->whereNotNull('message')->distinct()->pluck('message');
             $parents = Resource::Message->query()->whereIn('id', $parentIds)->orderBy('id')->lockForUpdate()->pluck('id');
             // Follow the worker's lock order. A callback must not change a claimed row's status.
@@ -163,9 +163,7 @@ final class NotificationController
                 }
             }
 
-            foreach ($parents as $parent) {
-                DeliverSendings::refreshMessage($parent);
-            }
+            DeliverSendings::refreshMessages($parents->all());
 
             return $updated;
         }, 3);

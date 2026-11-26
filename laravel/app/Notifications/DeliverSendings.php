@@ -105,7 +105,9 @@ final class DeliverSendings
     {
         DB::transaction(function () use ($sending, $changes, $stale): void {
             // Serialize aggregate updates for all sendings belonging to one message.
-            $parent = Resource::Message->query()->where('id', $sending->message)->lockForUpdate()->first();
+            $parentId = $sending->message === null
+                ? null
+                : Resource::Message->query()->where('id', $sending->message)->lockForUpdate()->value('id');
             $expired = $changes['status'] === 6;
             $query = Resource::Sending->query()->where('id', $sending->id)->where('attempts', $sending->attempts)
                 ->whereIn('status', $expired ? [0, 1] : [2]);
@@ -114,8 +116,8 @@ final class DeliverSendings
                     ->where('updatedAt', $sending->updatedAt);
             }
             $updated = $query->update([...$changes, 'claimedAt' => null, 'updatedAt' => now()]);
-            if ($updated && $parent !== null) {
-                self::refreshMessage($parent->id);
+            if ($updated && $parentId !== null) {
+                self::refreshMessages([$parentId]);
             }
             if ($updated && filled($changes['deliveryError'] ?? null)) {
                 Resource::EventLog->query()->insert([
@@ -129,17 +131,23 @@ final class DeliverSendings
         }, 3);
     }
 
-    public static function refreshMessage(int $id): void
+    public static function refreshMessages(array $ids): void
     {
-        $summary = Resource::Sending->query()->where('message', $id)
-            ->selectRaw('min(status) as earliest, min(status) filter (where status between 4 and 6) as failure')
-            ->first();
-        if ($summary->earliest === null) {
+        if ($ids === []) {
             return;
         }
 
-        // Keep the current progress while work is pending. A completed delivery exposes any failed channel.
-        $status = $summary->earliest < 3 ? max(1, $summary->earliest) : ($summary->failure ?? $summary->earliest);
-        Resource::Message->query()->where('id', $id)->update(['status' => $status, 'updatedAt' => now()]);
+        // Callers lock the parent rows before changing or aggregating their sendings.
+        $summary = Resource::Sending->query()->select('message')->whereIn('message', $ids)
+            ->selectRaw('min(status) as earliest, min(status) filter (where status between 4 and 6) as failure')
+            ->groupBy('message');
+        Resource::Message->query()->joinSub($summary, 'summary', 'messages.id', '=', 'summary.message')
+            ->updateFrom([
+                'status' => DB::raw(<<<'SQL'
+                    CASE WHEN summary.earliest < 3 THEN greatest(1, summary.earliest)
+                         ELSE coalesce(summary.failure, summary.earliest) END
+                    SQL),
+                'updatedAt' => now(),
+            ]);
     }
 }

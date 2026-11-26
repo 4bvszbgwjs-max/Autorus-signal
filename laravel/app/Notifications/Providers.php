@@ -7,13 +7,18 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Symfony\Component\Mailer\Exception\TransportExceptionInterface;
 use Symfony\Component\Mailer\Mailer;
 use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
 use Symfony\Component\Mime\Email;
 
 final class Providers
 {
-    public function __construct(private readonly RabbitMq $rabbit, private readonly ProviderHttpEndpoint $endpoint) {}
+    public function __construct(
+        private readonly RabbitMq $rabbit,
+        private readonly ProviderHttpEndpoint $endpoint,
+        private readonly ProviderDns $dns,
+    ) {}
 
     public function send(string $sender, array $config, object $sending, ?object $message): string
     {
@@ -51,7 +56,7 @@ final class Providers
         ]];
 
         $url = $this->required($config, 'url');
-        if (in_array(parse_url($url, PHP_URL_SCHEME), ['amqp', 'amqps'], true)) {
+        if (in_array(strtolower((string) parse_url($url, PHP_URL_SCHEME)), ['amqp', 'amqps'], true)) {
             $this->rabbit->publish($url, $this->required($config, 'exchange'), $config['routingKey'] ?? $config['routing_key'] ?? '', $payload, $id);
         } else {
             $this->http($config, $url, $payload, 'post');
@@ -63,7 +68,7 @@ final class Providers
     private function smtp(array $config, object $sending, string $id): string
     {
         $implicitTls = filter_var($config['ssl'] ?? false, FILTER_VALIDATE_BOOLEAN);
-        $host = $this->required($config, 'server');
+        $host = strtolower(rtrim($this->required($config, 'server'), '.'));
         $port = filter_var($config['port'] ?? ($implicitTls ? 465 : 587), FILTER_VALIDATE_INT, [
             'options' => ['min_range' => 1, 'max_range' => 65535],
         ]);
@@ -71,9 +76,22 @@ final class Providers
             throw new DeliveryFailure('invalid_smtp_port');
         }
 
-        $transport = new EsmtpTransport($host, $port, $implicitTls);
+        $relays = config('homer.provider_smtp_relays');
+        $relay = $host.':'.$port;
+        if (! array_key_exists($relay, $relays)) {
+            throw new DeliveryFailure('smtp_relay_not_allowed');
+        }
+        $addresses = $this->dns->addresses($host, $relays[$relay]);
+        $transport = new EsmtpTransport(reset($addresses), $port, $implicitTls);
         $transport->setRequireTls(true);
-        $transport->getStream()->setTimeout(10);
+        // Each notification uses a fresh SMTP session and explicitly completes the handshake before send().
+        $transport->setPingThreshold(PHP_INT_MAX);
+        $transport->getStream()->setTimeout(10)->setStreamOptions(['ssl' => [
+            'peer_name' => $host,
+            'verify_peer' => true,
+            'verify_peer_name' => true,
+            'SNI_enabled' => true,
+        ]]);
         if (! empty($config['user'])) {
             $transport->setUsername($config['user']);
             $transport->setPassword($this->required($config, 'password'));
@@ -82,6 +100,18 @@ final class Providers
         $email = (new Email)->from($this->required($config, 'email'))->to($sending->destination)
             ->subject($sending->subject)->text($sending->content ?? '')->html($sending->content ?? '');
         $email->getHeaders()->addIdHeader('Message-ID', $id.'@homer.local');
+        // Only try another checked address before any message data has been sent.
+        foreach ($addresses as $index => $address) {
+            $transport->getStream()->setHost($address);
+            try {
+                $transport->start();
+                break;
+            } catch (TransportExceptionInterface $failure) {
+                if ($index === array_key_last($addresses)) {
+                    throw $failure;
+                }
+            }
+        }
         (new Mailer($transport))->send($email);
 
         return $id;

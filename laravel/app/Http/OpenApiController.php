@@ -62,10 +62,18 @@ final class OpenApiController
             if ($resource === 'message') {
                 $paths[$base]['post']['description'] = 'New notifications always start at status 0. Omit status from the request, including batch items.';
             }
+            if ($resource === 'sending') {
+                $paths[$base]['post']['description'] = 'New sendings start at status 0. Omit status from the request.';
+            }
             unset($input['required']);
             $paths[$detail]['patch'] = $this->operation('patch_'.$resource, 200, $input, [404, 409]);
             $paths[$detail]['put'] = $this->operation('replace_'.$resource, 200, $resource === 'sending' ? $this->input($resource) : $input, [404, 409]);
             $paths[$detail]['delete'] = $this->operation('delete_'.$resource, 204, errors: [404, 409]);
+            if (in_array($resource, ['message', 'sending'], true)) {
+                foreach (['patch', 'put'] as $method) {
+                    $paths[$detail][$method]['description'] = 'Updates record data. Omit status from the request.';
+                }
+            }
         }
 
         foreach ([
@@ -81,6 +89,7 @@ final class OpenApiController
         }
         $paths['/api/v1/sending/status/']['patch']['description'] =
             'Accepts provider statuses as numbers from 3 through 8 or supported status names. Queue statuses 0 through 2 are rejected.';
+        $paths['/api/v1/sending/status/']['patch']['security'] = [['callbackBearerAuth' => []]];
 
         return response()->json([
             'openapi' => '3.0.3',
@@ -88,7 +97,10 @@ final class OpenApiController
             'security' => [['bearerAuth' => []]],
             'paths' => $paths,
             'components' => [
-                'securitySchemes' => ['bearerAuth' => ['type' => 'http', 'scheme' => 'bearer']],
+                'securitySchemes' => [
+                    'bearerAuth' => ['type' => 'http', 'scheme' => 'bearer'],
+                    'callbackBearerAuth' => ['type' => 'http', 'scheme' => 'bearer', 'description' => 'Dedicated provider callback token.'],
+                ],
                 'schemas' => [
                     'Envelope' => [
                         'type' => 'object', 'required' => ['meta', 'data'],

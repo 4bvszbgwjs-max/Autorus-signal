@@ -7,6 +7,7 @@ image="${1:-homer-octane:local}"
 # An exported deployment setting must not override the isolated test configuration.
 unset APP_ENV APP_KEY APP_URL HOMER_IMAGE HOMER_HTTP_PORT HOMER_API_TOKEN HOMER_ADMIN_PASSWORD_HASH HOMER_PURGE_EXPIRED
 unset POSTGRES_PASSWORD RABBITMQ_PASSWORD RMQ_CREATE_MESSAGE_EXCHANGE HOMER_PROVIDER_HTTP_HOSTS
+unset HOMER_CALLBACK_API_TOKEN HOMER_PROVIDER_SMTP_RELAYS HOMER_PROVIDER_AMQP_BROKERS
 env_file="$(mktemp)"
 host_fixtures="$(mktemp)"
 chmod 600 "$env_file"
@@ -32,6 +33,7 @@ trap cleanup EXIT
     printf 'POSTGRES_PASSWORD=%s\n' "$(openssl rand -hex 24)"
     printf 'RABBITMQ_PASSWORD=%s\n' "$(openssl rand -hex 24)"
     printf 'HOMER_API_TOKEN=%s\n' "$(openssl rand -hex 32)"
+    printf 'HOMER_CALLBACK_API_TOKEN=%s\n' "$(openssl rand -hex 32)"
 } > "$env_file"
 
 # Resolver fixtures for HTTP fakes. No connection is made to the public test address.

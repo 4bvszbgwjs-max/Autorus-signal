@@ -75,6 +75,7 @@ final class PrepareSendings
             }
 
             $sendings = [];
+            $prepared = [];
             foreach ($active as $message) {
                 $recipient = $recipients->get($message->recipientId);
                 $explicitScenario = $message->scenario_id;
@@ -117,17 +118,28 @@ final class PrepareSendings
                     }
                 }
 
-                Resource::Message->query()->where('id', $message->id)->update([
+                $prepared[] = [
+                    'id' => $message->id,
                     'status' => $sendable ? self::READY : self::UNSENT,
-                    'channels' => json_encode($channels, JSON_THROW_ON_ERROR),
+                    'channels' => $channels,
                     'scenario_id' => $scenario?->uuid ?? $explicitScenario,
                     'type' => $scenario ? $scenario->messageType : $message->type,
-                    'updatedAt' => $now,
-                ]);
+                ];
             }
 
             if ($sendings !== []) {
                 Resource::Sending->query()->insert($sendings);
+            }
+
+            foreach (array_chunk($prepared, 500) as $chunk) {
+                DB::update(<<<'SQL'
+                    UPDATE messages AS m
+                    SET status = batch.status, channels = batch.channels,
+                        scenario_id = batch.scenario_id, type = batch.type, "updatedAt" = ?
+                    FROM jsonb_to_recordset(CAST(? AS jsonb))
+                        AS batch(id bigint, status smallint, channels jsonb, scenario_id uuid, type smallint)
+                    WHERE m.id = batch.id
+                    SQL, [$now, json_encode($chunk, JSON_THROW_ON_ERROR)]);
             }
 
             return $messages->count();

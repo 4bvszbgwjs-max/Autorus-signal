@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
@@ -32,23 +33,42 @@ final class Directory
     public function upsertRecipients(array $input): array
     {
         $resource = Resource::Recipient;
-        $data = Validator::make(['items' => $input], [
+        Validator::make(['items' => $input], [
             'items' => 'array|max:1000',
             'items.*' => 'required|array',
             'items.*.phone' => 'required|string|max:200|distinct',
         ])->validate();
 
-        return DB::transaction(function () use ($resource, $input, $data): array {
+        // Keep the input order when rows with different insert defaults or update fields are interleaved.
+        $batches = [];
+        $previousColumns = [];
+        foreach ($input as $item) {
+            $recipient = $this->validate($resource, $item, true);
+            $now = now();
+            $row = [...$recipient, 'createdAt' => $now, 'updatedAt' => $now];
+            ksort($row);
+            $columns = array_keys($row);
+            if ($columns !== $previousColumns) {
+                $batches[] = [];
+                $previousColumns = $columns;
+            }
+            $batches[array_key_last($batches)][] = $row;
+        }
+        if ($batches === []) {
+            return [];
+        }
+
+        return DB::transaction(function () use ($resource, $batches): array {
             $result = [];
-            foreach ($data['items'] as $index => $item) {
-                $recipient = $this->validate($resource, $input[$index], true);
-                $now = now();
-                $resource->query()->upsert(
-                    [...$recipient, 'createdAt' => $now, 'updatedAt' => $now],
-                    ['phone'],
-                    [...array_diff(array_keys($recipient), ['phone']), 'updatedAt'],
-                );
-                $result[] = $resource->serialize($resource->query()->where('phone', $item['phone'])->first());
+            $query = $resource->query();
+            $grammar = $query->getGrammar();
+            foreach ($batches as $rows) {
+                $update = array_values(array_diff(array_keys($rows[0]), ['phone', 'createdAt']));
+                $sql = $grammar->compileUpsert($query, $rows, ['phone'], $update).' returning *';
+                $returned = array_column(DB::selectFromWriteConnection($sql, Arr::flatten($rows, 1)), null, 'phone');
+                foreach ($rows as $row) {
+                    $result[] = $resource->serialize($returned[$row['phone']]);
+                }
             }
 
             return $result;

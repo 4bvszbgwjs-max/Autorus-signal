@@ -10,7 +10,12 @@ final class ApiAccess
 {
     public function handle(Request $request, Closure $next): Response
     {
-        $expected = config('homer.api_token');
+        $apiToken = config('homer.api_token');
+        $callback = $request->routeIs('sending.status');
+        $expected = $callback ? config('homer.callback_api_token') : $apiToken;
+        if ($callback && $expected === $apiToken) {
+            $expected = null;
+        }
         if (! is_string($expected) || $expected === '' || ! hash_equals($expected, (string) $request->bearerToken())) {
             return response()->json(['errors' => [[
                 'code' => 'not_authenticated',

@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Route;
 Route::post('message', [NotificationController::class, 'createMessage']);
 Route::patch('message/bulk/remove', [NotificationController::class, 'removeMessages']);
 Route::patch('sending/bulk/remove', [NotificationController::class, 'removeSendings']);
-Route::patch('sending/status', [NotificationController::class, 'updateSendingStatus']);
+Route::patch('sending/status', [NotificationController::class, 'updateSendingStatus'])->name('sending.status');
 
 Route::get('{resource}', [NotificationController::class, 'index'])
     ->whereIn('resource', ['channel', 'message', 'recipient', 'scenario', 'sending', 'eventlog']);
