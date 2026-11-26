@@ -14,23 +14,25 @@ final class NotificationRecords
     public function updateMessage(int $id, array $input): array
     {
         MessageIntake::validateMetadata($input);
-        $rules = MessageIntake::rules();
-        $rules['eventId'] = 'sometimes|required|string|max:200';
-        $data = Validator::make($input, $rules)->validate();
-
-        foreach (['metadata', 'channels', 'tags'] as $field) {
-            if (array_key_exists($field, $data)) {
-                $data[$field] = json_encode($data[$field], JSON_THROW_ON_ERROR);
-            }
-        }
-        if (array_key_exists('subject', $data) && $data['subject'] === null) {
-            $data['subject'] = '';
-        }
         $query = Resource::Message->query()->where('id', $id);
 
         try {
-            return DB::transaction(function () use ($query, $data, $id): array {
-                abort_if((clone $query)->lockForUpdate()->first() === null, 404);
+            return DB::transaction(function () use ($query, $input, $id): array {
+                $current = (clone $query)->lockForUpdate()->first() ?? abort(404);
+                $rules = MessageIntake::rules();
+                $rules['eventId'] = 'sometimes|required|string|max:200';
+                if (($input['scenario_id'] ?? null) === $current->scenario_id) {
+                    $rules['scenario_id'] = 'nullable|uuid';
+                }
+                $data = Validator::make($input, $rules)->validate();
+                foreach (['metadata', 'channels', 'tags'] as $field) {
+                    if (array_key_exists($field, $data)) {
+                        $data[$field] = json_encode($data[$field], JSON_THROW_ON_ERROR);
+                    }
+                }
+                if (array_key_exists('subject', $data) && $data['subject'] === null) {
+                    $data['subject'] = '';
+                }
                 if ($data['isDeleted'] ?? false) {
                     $this->lockIdleSendings(Resource::Sending->query()->where('message', $id));
                 }

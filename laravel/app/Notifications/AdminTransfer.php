@@ -15,7 +15,7 @@ final class AdminTransfer
         return match ($resource) {
             Resource::Message => $key !== null
                 ? $this->records->updateMessage((int) $key, $input)
-                : ($this->intake->create([$input])[0] ?? throw ValidationException::withMessages(['eventId' => 'Уведомление с таким событием уже существует.'])),
+                : ($this->intake->create([$input], allowStatus: true)[0] ?? throw ValidationException::withMessages(['eventId' => 'Уведомление с таким событием уже существует.'])),
             Resource::Sending => $this->records->saveSending($input, $key === null ? null : (int) $key),
             default => $this->directory->save($resource, $input, $key),
         };

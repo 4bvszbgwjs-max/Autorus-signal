@@ -11,14 +11,18 @@ use Illuminate\Validation\ValidationException;
 
 final class MessageIntake
 {
-    public function create(array $messages): array
+    public function create(array $messages, bool $allowStatus = false): array
     {
         foreach ($messages as $index => $message) {
             self::validateMetadata($message, "messages.$index.metadata");
         }
 
         $rules = ['messages' => 'array|max:1000', 'messages.*' => 'required|array'];
-        foreach (self::rules() as $field => $rule) {
+        $fields = self::rules();
+        if (! $allowStatus) {
+            $fields['status'] = 'missing';
+        }
+        foreach ($fields as $field => $rule) {
             $rules['messages.*.'.$field] = $rule;
         }
         $validated = Validator::make(['messages' => $messages], $rules)->validate();

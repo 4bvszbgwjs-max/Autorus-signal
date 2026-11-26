@@ -13,7 +13,7 @@ use Symfony\Component\Mime\Email;
 
 final class Providers
 {
-    public function __construct(private readonly RabbitMq $rabbit) {}
+    public function __construct(private readonly RabbitMq $rabbit, private readonly ProviderHttpEndpoint $endpoint) {}
 
     public function send(string $sender, array $config, object $sending, ?object $message): string
     {
@@ -192,7 +192,8 @@ final class Providers
             throw new DeliveryFailure('invalid_firebase_credentials');
         }
         try {
-            $response = Http::asForm()->connectTimeout(3)->timeout(8)->withoutRedirecting()->post($url, [
+            $response = Http::asForm()->connectTimeout(3)->timeout(8)->withoutRedirecting()
+                ->withOptions($this->endpoint->options('oauth2.googleapis.com', 443))->post($url, [
                 'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
                 'assertion' => $jwt.'.'.$encode($signature),
             ]);
@@ -213,18 +214,23 @@ final class Providers
     {
         $uri = new Uri($url);
         $method = strtoupper($config['method'] ?? $default);
-        if (! in_array($uri->getScheme(), ['http', 'https'], true) || $uri->getHost() === ''
+        $host = rtrim($uri->getHost(), '.');
+        $headers = $config['headers'] ?? [];
+        if (! in_array($uri->getScheme(), ['http', 'https'], true) || $host === ''
+            || ! is_array($headers) || array_key_exists('host', array_change_key_case($headers))
             || ! in_array($method, ['GET', 'POST', 'PATCH', 'PUT'], true)) {
             throw new DeliveryFailure('invalid_http_configuration');
         }
 
-        $request = Http::connectTimeout(3)->timeout(8)->withoutRedirecting()->withHeaders($config['headers'] ?? []);
+        $uri = $uri->withHost($host);
+        $request = Http::connectTimeout(3)->timeout(8)->withoutRedirecting()->withHeaders($headers);
         if ($uri->getUserInfo() !== '') {
             [$user, $password] = array_pad(explode(':', $uri->getUserInfo(), 2), 2, '');
             $request = $request->withBasicAuth(rawurldecode($user), rawurldecode($password));
             $uri = $uri->withUserInfo('');
         }
-        $options = ['json' => $data];
+        $options = $this->endpoint->options($host, $uri->getPort() ?? ($uri->getScheme() === 'https' ? 443 : 80));
+        $options['json'] = $data;
         if ($query !== []) {
             parse_str($uri->getQuery(), $configuredQuery);
             $options['query'] = [...$configuredQuery, ...$query];

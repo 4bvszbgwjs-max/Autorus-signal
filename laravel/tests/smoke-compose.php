@@ -1,7 +1,9 @@
 <?php
 
+use App\Notifications\MessageIntake;
 use App\Notifications\RabbitMq;
 use Illuminate\Contracts\Console\Kernel;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
@@ -39,6 +41,46 @@ try {
     }
 
     $rabbit = $app->make(RabbitMq::class);
+    $intake = $app->make(MessageIntake::class);
+    $recoveryExchange = 'homer.smoke.intake-recovery';
+    $channel->exchange_declare($recoveryExchange, 'direct', false, true, false);
+    $channel->queue_declare($recoveryExchange, false, true, false, false);
+    $channel->queue_bind($recoveryExchange, $recoveryExchange, '');
+
+    $rabbit->publish($url, $recoveryExchange, '', ['eventId' => 'invalid-intake', 'status' => 8], 'invalid-intake');
+    $rabbit->consume($intake, $url, $recoveryExchange, once: true);
+    if ($channel->basic_get($recoveryExchange, true) !== null
+        || DB::table('messages')->where('eventId', 'invalid-intake')->exists()) {
+        throw new RuntimeException('The invalid intake was queued again or persisted.');
+    }
+
+    $rabbit->publish($url, $recoveryExchange, '', ['eventId' => 'retry-intake'], 'retry-intake');
+    $connectionName = DB::getDefaultConnection();
+    $databaseConfig = 'database.connections.'.$connectionName.'.database';
+    $originalDatabase = config($databaseConfig);
+    config([$databaseConfig => 'synthetic_unavailable_database']);
+    DB::purge($connectionName);
+    try {
+        $rabbit->consume($intake, $url, $recoveryExchange, once: true);
+        throw new RuntimeException('Expected intake to fail with PostgreSQL unavailable.');
+    } catch (QueryException|PDOException) {
+        // The recovery consumer must see the delivery after the failing consumer exits.
+    } finally {
+        config([$databaseConfig => $originalDatabase]);
+        DB::purge($connectionName);
+    }
+    $requeued = $channel->basic_get($recoveryExchange);
+    if ($requeued === null || ! $requeued->isRedelivered()
+        || DB::table('messages')->where('eventId', 'retry-intake')->exists()) {
+        throw new RuntimeException('A failed transaction did not leave a redeliverable message.');
+    }
+    $requeued->reject(true);
+    $rabbit->consume($intake, $url, $recoveryExchange, once: true);
+    if (DB::table('messages')->where('eventId', 'retry-intake')->count() !== 1
+        || $channel->basic_get($recoveryExchange, true) !== null) {
+        throw new RuntimeException('The recovery consumer did not persist and acknowledge the message.');
+    }
+
     $eventId = 'compose-smoke';
     $notification = [
         'eventId' => $eventId, 'recipientId' => '555',

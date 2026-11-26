@@ -59,7 +59,7 @@ final class NotificationController
         abort_if($page > $result->lastPage(), 404);
 
         return response()->json([
-            'meta' => ['total' => $result->total(), 'limit' => self::DEFAULT_PAGE_SIZE, 'page' => $page],
+            'meta' => ['total' => $result->total(), 'limit' => $limit, 'page' => $page],
             'data' => array_map($resource->serialize(...), $result->items()),
         ]);
     }
