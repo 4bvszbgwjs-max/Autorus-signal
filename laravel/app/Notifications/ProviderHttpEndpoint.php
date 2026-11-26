@@ -6,11 +6,13 @@ final class ProviderHttpEndpoint
 {
     public function options(string $host, int $port): array
     {
+        $host = strtolower(rtrim($host, '.'));
         if (! preg_match('/\A(?=.{1,253}\z)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\z/', $host)
             || ! in_array($host, config('homer.provider_http_hosts'), true)) {
             throw new DeliveryFailure('provider_host_not_allowed');
         }
-        if (! extension_loaded('curl') || ! function_exists('socket_addrinfo_lookup')) {
+        if ((! function_exists('curl_exec') && ! function_exists('curl_multi_exec'))
+            || ! function_exists('socket_addrinfo_lookup') || ! function_exists('socket_addrinfo_explain')) {
             throw new DeliveryFailure('provider_safe_transport_unavailable');
         }
 
