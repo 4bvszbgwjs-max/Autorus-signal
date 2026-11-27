@@ -17,7 +17,7 @@ final class ProviderDns
         }
 
         $pin = $privateIp === null ? null : @inet_pton($privateIp);
-        if ($pin !== null && ! $this->isPrivateAddress($pin)) {
+        if ($pin === false || ($pin !== null && ! $this->isPrivateAddress($pin))) {
             throw new DeliveryFailure('provider_address_not_allowed');
         }
         $addresses = [];

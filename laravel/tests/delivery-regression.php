@@ -223,6 +223,22 @@ $cases = [
         if ((int) DB::table('sendings')->where('id', $other['id'])->value('status') !== 7) {
             throw new RuntimeException('A channel-scoped callback did not update its sending.');
         }
+        $scoped = ['uuid' => $providerId, 'channel' => $otherChannel];
+        $request('PATCH', 'sending/status', [$scoped + ['status' => 8], ['uuid' => $providerId, 'status' => 7]], 409);
+        if (DB::table('sendings')->where('id', $other['id'])->value('status') !== 7) {
+            throw new RuntimeException('An ambiguous callback did not reject the entire batch.');
+        }
+        $duplicateBatch = $request('PATCH', 'sending/status', [
+            $scoped + ['status' => 7],
+            $scoped + ['status' => 3],
+            $scoped + ['status' => 8],
+            $scoped + ['status' => 7],
+            $scoped + ['status' => 8],
+        ], 200)['data'];
+        if (array_column($duplicateBatch, 'status') !== [7, 8, 8]
+            || DB::table('sendings')->where('id', $other['id'])->value('status') !== 8) {
+            throw new RuntimeException('Repeated callbacks were not applied in input order.');
+        }
 
         foreach ([4, 5, 6] as $failure) {
             $parent = $request('POST', 'message', ['subject' => 'Status rollup'], 200)['data'][0];
@@ -240,13 +256,13 @@ $cases = [
         $request('DELETE', 'channel/'.$channel, [], 204);
         $request('GET', 'sending/'.$sending['id'], [], 404);
     },
-    'batched callbacks aggregate message statuses in one update' => function () use ($request, $createChannel): void {
+    'batched callbacks write sendings and messages in two updates' => function () use ($request, $createChannel): void {
         $channel = $createChannel();
         DB::insert(<<<'SQL'
             INSERT INTO messages (uuid, "eventId", expire, "mustBeSend", "recipientId", status, channels, tags, metadata, "createdAt", "updatedAt")
             SELECT gen_random_uuid(), 'callback-batch-' || n, now() + interval '1 day', now(),
                    '', 1, '[]', '[]', '{}', now(), now()
-            FROM generate_series(1, 250) AS n
+            FROM generate_series(1, 500) AS n
             SQL);
         DB::insert(<<<'SQL'
             INSERT INTO sendings (uuid, message, channel, expire, "mustBeSend", status, "createdAt", "updatedAt")
@@ -264,7 +280,7 @@ $cases = [
             FROM messages WHERE "eventId" = 'callback-batch-3'
             SQL, [$channel]);
         $payload = [];
-        foreach (range(1, 250) as $index) {
+        foreach (range(1, 500) as $index) {
             $payload[] = ['uuid' => (string) $index, 'status' => 7];
             // A leading zero is part of the provider ID, not a numeric normalization.
             $payload[] = ['uuid' => '0'.$index, 'status' => $index % 3 === 1 ? 3 : 4]
@@ -274,18 +290,21 @@ $cases = [
         DB::enableQueryLog();
         try {
             $response = $request('PATCH', 'sending/status', $payload, 200);
-            $updates = collect(DB::getQueryLog())->filter(
-                fn (array $entry) => str_starts_with(strtolower($entry['query']), 'update "messages"'),
-            )->count();
+            $writes = collect(DB::getQueryLog())->pluck('query')->filter(
+                fn (string $sql) => str_starts_with(strtolower($sql), 'update '),
+            )->values();
         } finally {
             DB::disableQueryLog();
             DB::flushQueryLog();
         }
         $statuses = DB::table('messages')->where('eventId', 'like', 'callback-batch-%')->pluck('status', 'eventId');
-        if (count($response['data']) !== 500 || $updates !== 1 || $statuses->count() !== 250) {
+        if ($response['data'] !== array_map(fn (array $item) => ['uuid' => $item['uuid'], 'status' => $item['status']], $payload)
+            || $writes->count() !== 2 || ! str_starts_with($writes[0], 'UPDATE sendings AS s')
+            || ! str_starts_with($writes[1], 'update "messages"') || $statuses->count() !== 500) {
             throw new RuntimeException('The callback must update all affected messages together.');
         }
-        foreach (range(1, 250) as $index) {
+        $request('PATCH', 'sending/status', [...$payload, $payload[0]], 400);
+        foreach (range(1, 500) as $index) {
             $expected = match (true) {
                 $index === 3 => 1,
                 $index % 3 === 1 => 3,
@@ -508,6 +527,16 @@ $cases = [
         }
         if ($app->make(ProviderDns::class)->addresses('private.provider.invalid', '10.0.0.1') !== ['10.0.0.1']) {
             throw new RuntimeException('The trusted private relay address was not pinned.');
+        }
+        foreach (['', '10.0.0.typo'] as $pin) {
+            try {
+                $app->make(ProviderDns::class)->addresses('public.provider.invalid', $pin);
+                throw new RuntimeException('An invalid private address pin fell back to public DNS.');
+            } catch (DeliveryFailure $failure) {
+                if ($failure->getMessage() !== 'provider_address_not_allowed') {
+                    throw $failure;
+                }
+            }
         }
     },
     'outgoing Notices brokers are restricted to approved endpoints' => function () use ($app): void {

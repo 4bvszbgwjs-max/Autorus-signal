@@ -130,6 +130,7 @@ final class NotificationController
                 return [];
             }
             $updated = [];
+            $changes = [];
             [$unscoped, $scoped] = collect($validated['items'])->partition(fn (array $item) => $item['channel'] === null);
             $sendings = Resource::Sending->query()->where(function ($query) use ($unscoped, $scoped): void {
                 if ($unscoped->isNotEmpty()) {
@@ -142,7 +143,13 @@ final class NotificationController
             $parentIds = (clone $sendings)->whereNotNull('message')->distinct()->pluck('message');
             $parents = Resource::Message->query()->whereIn('id', $parentIds)->orderBy('id')->lockForUpdate()->pluck('id');
             // Follow the worker's lock order. A callback must not change a claimed row's status.
-            $byUuid = $records->lockIdleSendings($sendings)->groupBy('uuid');
+            $locked = $records->lockIdleSendings($sendings);
+            $lockedParents = $parents->flip();
+            // Another request can reassign a sending while the callback is waiting on a parent lock.
+            abort_if($locked->contains(
+                fn (object $sending) => $sending->message !== null && ! $lockedParents->has($sending->message),
+            ), 409);
+            $byUuid = $locked->groupBy('uuid');
 
             foreach ($validated['items'] as $item) {
                 $matches = $byUuid->get($item['uuid'], collect());
@@ -153,14 +160,24 @@ final class NotificationController
                 if ($matches->isEmpty()) {
                     continue;
                 }
-                $query = Resource::Sending->query()->where('id', $matches->first()->id);
-                // Provider callbacks can arrive out of order. Preserve delivered and read states.
-                if ($item['status'] < 8) {
-                    $query->where('status', '<=', $item['status'] < 7 ? 6 : 7);
+                $sending = $matches->first();
+                $status = (int) $item['status'];
+                $current = $changes[$sending->id]['status'] ?? $sending->status;
+                // Evaluate repeated entries in their original order against the locked or staged status.
+                if ($status < 8 && $current > ($status < 7 ? 6 : 7)) {
+                    continue;
                 }
-                if ($query->update(['status' => $item['status'], 'updatedAt' => now()]) > 0) {
-                    $updated[] = ['uuid' => $item['uuid'], 'status' => (int) $item['status']];
-                }
+                $changes[$sending->id] = ['id' => $sending->id, 'status' => $status];
+                $updated[] = ['uuid' => $item['uuid'], 'status' => $status];
+            }
+
+            if ($changes !== []) {
+                DB::update(<<<'SQL'
+                    UPDATE sendings AS s
+                    SET status = batch.status, "updatedAt" = ?
+                    FROM jsonb_to_recordset(CAST(? AS jsonb)) AS batch(id bigint, status smallint)
+                    WHERE s.id = batch.id
+                    SQL, [now(), json_encode(array_values($changes), JSON_THROW_ON_ERROR)]);
             }
 
             DeliverSendings::refreshMessages($parents->all());
