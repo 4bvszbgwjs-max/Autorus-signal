@@ -99,7 +99,7 @@ final class NotificationRecords
 
     public function lockIdleSendings(Builder $query): Collection
     {
-        $sendings = (clone $query)->orderBy('id')->lockForUpdate()->get(['id', 'uuid', 'channel', 'claimedAt']);
+        $sendings = (clone $query)->orderBy('id')->lockForUpdate()->get(['id', 'uuid', 'channel', 'message', 'status', 'claimedAt']);
         abort_if($sendings->contains(fn (object $sending) => $sending->claimedAt !== null), 409);
 
         return $sendings;

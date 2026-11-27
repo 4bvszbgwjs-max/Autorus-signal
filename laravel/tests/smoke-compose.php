@@ -7,6 +7,7 @@ use Illuminate\Contracts\Console\Kernel;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
+use Symfony\Component\Process\Process;
 
 require getcwd().'/vendor/autoload.php';
 $app = require getcwd().'/bootstrap/app.php';
@@ -29,6 +30,65 @@ try {
         'sender' => 'notices',
         'config' => ['url' => $url, 'exchange' => $outgoingExchange],
     ])->throw();
+
+    $original = $api->post('/message', ['subject' => 'Original callback parent'])->throw()->json('data.0.id');
+    $replacement = $api->post('/message', ['subject' => 'Replacement callback parent'])->throw()->json('data.0.id');
+    $providerId = 'compose-reparent';
+    $sending = $api->post('/sending', [
+        'channel' => 'compose-notices', 'message' => $original, 'content' => 'Callback race', 'uuid' => $providerId,
+    ])->throw()->json('data.id');
+    $callback = new Process([PHP_BINARY, '-r', <<<'PHP'
+        $curl = curl_init('http://127.0.0.1:8000/api/v1/sending/status');
+        curl_setopt_array($curl, [
+            CURLOPT_CUSTOMREQUEST => 'PATCH',
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json',
+                'Authorization: Bearer '.getenv('HOMER_CALLBACK_API_TOKEN')],
+            CURLOPT_POSTFIELDS => json_encode(['uuid' => $argv[1], 'status' => 7], JSON_THROW_ON_ERROR),
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_PROXY => '',
+        ]);
+        if (curl_exec($curl) === false) {
+            exit(1);
+        }
+        echo curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
+        PHP, $providerId], timeout: 12);
+    DB::beginTransaction();
+    try {
+        DB::table('messages')->where('id', $original)->lockForUpdate()->value('id');
+        $lockPid = DB::scalar('SELECT pg_backend_pid()');
+        $callback->start();
+        $deadline = microtime(true) + 6;
+        do {
+            DB::selectOne('SELECT pg_stat_clear_snapshot()');
+            $waiting = DB::scalar(<<<'SQL'
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_stat_activity
+                    WHERE ? = ANY(pg_blocking_pids(pid))
+                      AND query LIKE 'select "id" from "messages"%for update'
+                )
+                SQL, [$lockPid]);
+            if ($waiting) {
+                break;
+            }
+            usleep(50000);
+        } while ($callback->isRunning() && microtime(true) < $deadline);
+        if (! $waiting) {
+            throw new RuntimeException('The callback did not wait for the original parent lock.');
+        }
+        $writer = DB::build(config('database.connections.pgsql'));
+        $writer->table('sendings')->where('id', $sending)->update(['message' => $replacement]);
+    } finally {
+        DB::rollBack();
+    }
+    if ($callback->wait() !== 0 || trim($callback->getOutput()) !== '409'
+        || DB::table('sendings')->where('id', $sending)->value('status') !== 0) {
+        throw new RuntimeException('The callback accepted a sending reassigned to an unlocked parent.');
+    }
+    $api->withToken(config('homer.callback_api_token'))->patch('/sending/status', ['uuid' => $providerId, 'status' => 7])->throw();
+    $api->withToken(config('homer.api_token'));
+    if (DB::table('messages')->where('id', $replacement)->value('status') !== 7) {
+        throw new RuntimeException('The callback retry did not refresh the actual parent.');
+    }
 
     $broker = parse_url($url);
     $connection = new AMQPStreamConnection($broker['host'], $broker['port'], $broker['user'], $broker['pass']);
